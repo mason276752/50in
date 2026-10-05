@@ -49,12 +49,31 @@ const pool = computed(() =>
   settings.mode === 'similar' ? buildSimilarPool(settings.similarOff) : buildPool(settings.scripts, settings.groups),
 )
 
+const ALL_KANA = new Map(buildPool(SCRIPTS.map((s) => s.key), GROUPS.map((g) => g.key)).map((x) => [x.id, x]))
+
 // ---- 每個假名的累積紀錄（用來加權出題 / 弱點列表）----
 const kanaStats = reactive(load(LS_STATS, {}))
 watch(kanaStats, (v) => save(LS_STATS, v), { deep: true })
 function statOf(id) {
-  return (kanaStats[id] ||= { hit: 0, miss: 0 })
+  return (kanaStats[id] ||= { hit: 0, miss: 0, pending: 0 })
 }
+
+// ---- 錯題複習：答錯後要連續答對 REVIEW_STREAK 次才算過關 ----
+// 答錯後隔 2 題再出，之後每答對一次間隔加倍（4、8 題）；複習中又錯就從頭來
+const REVIEW_STREAK = 3
+const REVIEW_GAPS = [2, 4, 8]
+let cardNo = 0
+const reviewDue = new Map() // id → 第幾張卡該再出（只存在本次，重新整理後待複習的字視為立刻到期）
+
+function scheduleReview(id, done) {
+  reviewDue.set(id, cardNo + REVIEW_GAPS[Math.min(done, REVIEW_GAPS.length - 1)])
+}
+const reviewList = computed(() =>
+  Object.entries(kanaStats)
+    .filter(([, st]) => st.pending > 0)
+    .map(([id, st]) => ({ id, done: REVIEW_STREAK - st.pending, item: ALL_KANA.get(id) }))
+    .filter((r) => r.item),
+)
 
 // ---- 本回合統計 ----
 const session = reactive({ correct: 0, wrong: 0, streak: 0, best: 0, totalMs: 0 })
@@ -79,6 +98,14 @@ function pickNext() {
     current.value = null
     return
   }
+  cardNo++
+
+  // 到期的錯題優先（不受「最近出過」限制，只避開剛剛那題）
+  const due = p
+    .filter((x) => kanaStats[x.id]?.pending > 0 && x.id !== current.value?.id && (reviewDue.get(x.id) ?? 0) <= cardNo)
+    .sort((a, b) => (reviewDue.get(a.id) ?? 0) - (reviewDue.get(b.id) ?? 0))
+  if (due.length) return showCard(due[0])
+
   let candidates = p.filter((x) => !recent.includes(x.id))
   if (!candidates.length) candidates = p
 
@@ -104,6 +131,11 @@ function pickNext() {
     }
   }
 
+  showCard(next)
+}
+
+function showCard(next) {
+  const p = pool.value
   recent.push(next.id)
   while (recent.length > Math.min(4, p.length - 1)) recent.shift()
 
@@ -121,6 +153,8 @@ function markWrong() {
     session.streak = 0
     statOf(current.value.id).miss++
   }
+  statOf(current.value.id).pending = REVIEW_STREAK
+  scheduleReview(current.value.id, 0)
   card.hint = true
   navigator.vibrate?.(60)
   card.shake = false
@@ -136,7 +170,13 @@ function markCorrect() {
     session.streak++
     session.best = Math.max(session.best, session.streak)
     session.totalMs += performance.now() - card.startedAt
-    statOf(item.id).hit++
+    const st = statOf(item.id)
+    st.hit++
+    if (st.pending > 0) {
+      st.pending--
+      if (st.pending > 0) scheduleReview(item.id, REVIEW_STREAK - st.pending)
+      else reviewDue.delete(item.id)
+    }
   }
   history.value.unshift({ item, ok: !card.missed, key: performance.now() })
   history.value.length = Math.min(history.value.length, 24)
@@ -225,7 +265,6 @@ function onKeydown(e) {
 }
 
 // ---- 弱點 ----
-const ALL_KANA = new Map(buildPool(SCRIPTS.map((s) => s.key), GROUPS.map((g) => g.key)).map((x) => [x.id, x]))
 const weakList = computed(() =>
   Object.entries(kanaStats)
     .filter(([, s]) => s.miss > 0)
@@ -240,9 +279,14 @@ function resetAll() {
   Object.assign(session, { correct: 0, wrong: 0, streak: 0, best: 0, totalMs: 0 })
   for (const k of Object.keys(kanaStats)) delete kanaStats[k]
   history.value = []
+  reviewDue.clear()
   pickNext()
 }
 
+const currentReview = computed(() => {
+  const st = current.value && kanaStats[current.value.id]
+  return st?.pending > 0 ? REVIEW_STREAK - st.pending : null
+})
 const lookalikes = computed(() => (current.value ? similarTo(current.value.id) : []))
 
 const setsOpen = ref(false)
@@ -377,10 +421,14 @@ onBeforeUnmount(() => {
           <span class="bad">✗ {{ session.wrong }}</span>
           <span>{{ accuracy }}%</span>
           <span>連續 {{ session.streak }}</span>
+          <span v-if="reviewList.length" class="rv">複習 {{ reviewList.length }}</span>
         </div>
 
         <div v-if="current" ref="cardEl" class="card" :class="{ ok: card.flash === 'ok', shake: card.shake, kata: current.script === 'kata' }">
           <span class="script-tag">{{ current.script === 'kata' ? '片' : '平' }}</span>
+          <span v-if="currentReview !== null" class="review-tag" :title="`複習中：再連續答對 ${REVIEW_STREAK - currentReview} 次`">
+            複習 <i v-for="n in REVIEW_STREAK" :key="n" :class="{ done: n <= currentReview }" />
+          </span>
           <div class="kana" :lang="'ja'">{{ current.display }}</div>
           <div class="hint" :class="{ show: card.hint }">{{ current.romaji.join(' / ') }}</div>
         </div>
@@ -463,6 +511,15 @@ onBeforeUnmount(() => {
               {{ h.item.display }}<small>{{ h.item.romaji[0] }}</small>
             </span>
           </TransitionGroup>
+        </div>
+
+        <div v-if="reviewList.length" class="block">
+          <h3>待複習 · 連續答對 {{ REVIEW_STREAK }} 次過關</h3>
+          <div class="weak">
+            <span v-for="r in reviewList" :key="r.id" class="w" lang="ja">
+              {{ r.item.display }}<small class="dots"><i v-for="n in REVIEW_STREAK" :key="n" :class="{ done: n <= r.done }" /></small>
+            </span>
+          </div>
         </div>
 
         <div v-if="weakList.length" class="block">

@@ -225,3 +225,16 @@ button { font: inherit; color: inherit; cursor: pointer; }
 }
 .sets-toggle { align-self: flex-end; }
 @media (max-width: 820px) { .sets-toggle { align-self: flex-start; } }
+
+/* ---- 錯題複習 ---- */
+.card .review-tag {
+  position: absolute; top: 12px; right: 14px; font-size: 12px; color: var(--accent);
+  display: inline-flex; align-items: center; gap: 4px;
+}
+.review-tag i, .dots i {
+  width: 7px; height: 7px; border-radius: 50%; display: inline-block;
+  border: 1.5px solid var(--accent); box-sizing: border-box;
+}
+.review-tag i.done, .dots i.done { background: var(--accent); }
+.dots { display: inline-flex; gap: 3px; margin-top: 3px; }
+.mini-stats .rv { color: var(--accent); }
