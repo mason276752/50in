@@ -2,6 +2,8 @@
 import { ref, reactive, computed, watch, nextTick, onMounted, onBeforeUnmount } from 'vue'
 import { GROUPS, SCRIPTS, SIMILAR_SETS, buildPool, buildSimilarPool, similarTo, matchTyped, matchSpeech, looksChinese } from './kana'
 import { useSpeechRecognition, speak } from './useSpeech'
+import { recognize, matchWritten } from './handwriting'
+import HandwritePad from './HandwritePad.vue'
 
 const LS_SETTINGS = 'kana-quiz:settings'
 const LS_STATS = 'kana-quiz:stats'
@@ -27,6 +29,7 @@ const settings = reactive(
     autoSpeak: false,
     mode: 'normal', // 'normal' 依分類 | 'similar' 易混淆
     similarOff: [], // 易混淆模式下關掉的組（記關掉的，預設全開）
+    answer: 'type', // 'type' 看假名打拼音 | 'write' 看拼音手寫假名
   }),
 )
 watch(settings, (v) => save(LS_SETTINGS, v), { deep: true })
@@ -49,13 +52,26 @@ const pool = computed(() =>
   settings.mode === 'similar' ? buildSimilarPool(settings.similarOff) : buildPool(settings.scripts, settings.groups),
 )
 
+const writeMode = computed(() => settings.answer === 'write')
+
 const ALL_KANA = new Map(buildPool(SCRIPTS.map((s) => s.key), GROUPS.map((g) => g.key)).map((x) => [x.id, x]))
 
 // ---- 每個假名的累積紀錄（用來加權出題 / 弱點列表）----
 const kanaStats = reactive(load(LS_STATS, {}))
 watch(kanaStats, (v) => save(LS_STATS, v), { deep: true })
+// 認字和寫字是不同能力：手寫的紀錄另外存在 'w|' 開頭的 key
+const WRITE_PREFIX = 'w|'
+function sk(id) {
+  return writeMode.value ? WRITE_PREFIX + id : id
+}
 function statOf(id) {
-  return (kanaStats[id] ||= { hit: 0, miss: 0, pending: 0 })
+  return (kanaStats[sk(id)] ||= { hit: 0, miss: 0, pending: 0 })
+}
+// 目前作答方式的紀錄：[[假名 id, 紀錄], …]
+function modeStats() {
+  return Object.entries(kanaStats)
+    .filter(([k]) => k.startsWith(WRITE_PREFIX) === writeMode.value)
+    .map(([k, st]) => [writeMode.value ? k.slice(WRITE_PREFIX.length) : k, st])
 }
 
 // ---- 錯題複習：答錯後要連續答對 REVIEW_STREAK 次才算過關 ----
@@ -66,10 +82,10 @@ let cardNo = 0
 const reviewDue = new Map() // id → 第幾張卡該再出（只存在本次，重新整理後待複習的字視為立刻到期）
 
 function scheduleReview(id, done) {
-  reviewDue.set(id, cardNo + REVIEW_GAPS[Math.min(done, REVIEW_GAPS.length - 1)])
+  reviewDue.set(sk(id), cardNo + REVIEW_GAPS[Math.min(done, REVIEW_GAPS.length - 1)])
 }
 const reviewList = computed(() =>
-  Object.entries(kanaStats)
+  modeStats()
     .filter(([, st]) => st.pending > 0)
     .map(([id, st]) => ({ id, done: REVIEW_STREAK - st.pending, item: ALL_KANA.get(id) }))
     .filter((r) => r.item),
@@ -102,8 +118,8 @@ function pickNext() {
 
   // 到期的錯題優先（不受「最近出過」限制，只避開剛剛那題）
   const due = p
-    .filter((x) => kanaStats[x.id]?.pending > 0 && x.id !== current.value?.id && (reviewDue.get(x.id) ?? 0) <= cardNo)
-    .sort((a, b) => (reviewDue.get(a.id) ?? 0) - (reviewDue.get(b.id) ?? 0))
+    .filter((x) => kanaStats[sk(x.id)]?.pending > 0 && x.id !== current.value?.id && (reviewDue.get(sk(x.id)) ?? 0) <= cardNo)
+    .sort((a, b) => (reviewDue.get(sk(a.id)) ?? 0) - (reviewDue.get(sk(b.id)) ?? 0))
   if (due.length) return showCard(due[0])
 
   let candidates = p.filter((x) => !recent.includes(x.id))
@@ -118,7 +134,7 @@ function pickNext() {
 
   // 錯越多、對越少的越常出現
   const weights = candidates.map((x) => {
-    const s = kanaStats[x.id] || { hit: 0, miss: 0 }
+    const s = kanaStats[sk(x.id)] || { hit: 0, miss: 0 }
     return (1 + s.miss * 2) / (1 + s.hit * 0.25)
   })
   let r = Math.random() * weights.reduce((a, b) => a + b, 0)
@@ -142,6 +158,7 @@ function showCard(next) {
   current.value = next
   Object.assign(card, { missed: false, hint: false, startedAt: performance.now(), flash: '', shake: false })
   clearInput()
+  resetPad()
   locked = false
   if (settings.autoSpeak) playSound()
 }
@@ -175,7 +192,7 @@ function markCorrect() {
     if (st.pending > 0) {
       st.pending--
       if (st.pending > 0) scheduleReview(item.id, REVIEW_STREAK - st.pending)
-      else reviewDue.delete(item.id)
+      else reviewDue.delete(sk(item.id))
     }
   }
   history.value.unshift({ item, ok: !card.missed, key: performance.now() })
@@ -212,6 +229,60 @@ function onInput(e) {
   else if (result === 'wrong') {
     markWrong()
     clearInput()
+  }
+}
+
+// ---- 手寫 ----
+const padEl = ref(null)
+const written = ref([]) // 最近一次辨識的候選字
+const writeErr = ref('')
+let recogTimer = 0
+let recogAbort = null
+
+function cancelRecognize() {
+  clearTimeout(recogTimer)
+  recogAbort?.abort()
+  recogAbort = null
+}
+function resetPad() {
+  cancelRecognize()
+  padEl.value?.clear()
+  written.value = []
+  writeErr.value = ''
+}
+// 每寫完一筆就在背景辨識：寫對了直接過關；寫錯只有按「判定」才算錯（可能還沒寫完）
+function onStroke() {
+  cancelRecognize()
+  recogTimer = setTimeout(() => checkWriting(false), 350)
+}
+function undoStroke() {
+  cancelRecognize()
+  padEl.value?.undo()
+  if (padEl.value?.isEmpty()) written.value = []
+}
+async function checkWriting(submit) {
+  const pad = padEl.value
+  if (!current.value || locked || !pad) return
+  if (pad.isEmpty()) {
+    if (submit) skip()
+    return
+  }
+  cancelRecognize()
+  const ctrl = (recogAbort = new AbortController())
+  const item = current.value
+  const { strokes, w, h } = pad.getInk()
+  try {
+    const candidates = await recognize(strokes, w, h, ctrl.signal)
+    if (ctrl.signal.aborted || current.value !== item || locked) return
+    writeErr.value = ''
+    written.value = candidates.slice(0, 5)
+    if (matchWritten(candidates, item)) markCorrect()
+    else if (submit) {
+      markWrong() // 顯示答案，手寫板淡淡印出正確字形讓你描
+      pad.clear()
+    }
+  } catch (e) {
+    if (e.name !== 'AbortError') writeErr.value = '手寫辨識需要網路連線，請稍後再試'
   }
 }
 
@@ -253,6 +324,22 @@ function playSound() {
 }
 
 // ---- 鍵盤 ----
+// 手寫模式沒有輸入框，鍵盤快捷鍵掛在 window 上
+function onWindowKeydown(e) {
+  if (!writeMode.value || e.isComposing || /^(INPUT|TEXTAREA)$/.test(e.target.tagName)) return
+  if (e.key === 'Enter') {
+    e.preventDefault()
+    checkWriting(true)
+  } else if (e.key === 'Escape') {
+    e.preventDefault()
+    playSound()
+  } else if (e.key === 'Backspace' || (e.key === 'z' && (e.metaKey || e.ctrlKey))) {
+    e.preventDefault()
+    undoStroke()
+  } else if (e.key === 'Delete') {
+    resetPad()
+  }
+}
 function onKeydown(e) {
   if (e.isComposing) return
   if (e.key === 'Enter') {
@@ -266,7 +353,7 @@ function onKeydown(e) {
 
 // ---- 弱點 ----
 const weakList = computed(() =>
-  Object.entries(kanaStats)
+  modeStats()
     .filter(([, s]) => s.miss > 0)
     .map(([id, s]) => ({ id, ...s, rate: s.miss / (s.hit + s.miss) }))
     .sort((a, b) => b.rate - a.rate || b.miss - a.miss)
@@ -284,7 +371,7 @@ function resetAll() {
 }
 
 const currentReview = computed(() => {
-  const st = current.value && kanaStats[current.value.id]
+  const st = current.value && kanaStats[sk(current.value.id)]
   return st?.pending > 0 ? REVIEW_STREAK - st.pending : null
 })
 const lookalikes = computed(() => (current.value ? similarTo(current.value.id) : []))
@@ -318,6 +405,16 @@ const chartSections = computed(() => {
   }))
 })
 
+watch(
+  () => settings.answer,
+  () => {
+    if (writeMode.value) mic.stop() // 手寫時不要讓語音順便答題
+    recent = []
+    pickNext()
+    focusInput()
+  },
+)
+
 watch(pool, (p) => {
   recent = []
   if (!current.value || !p.some((x) => x.id === current.value.id)) pickNext()
@@ -326,7 +423,7 @@ watch(pool, (p) => {
 // 觸控裝置：不主動叫出鍵盤（用語音作答時很干擾），使用者點輸入框才打字
 const isTouch = window.matchMedia('(pointer: coarse)').matches
 function focusInput() {
-  if (isTouch || mic.listening.value) return
+  if (isTouch || writeMode.value || mic.listening.value) return
   nextTick(() => inputEl.value?.focus())
 }
 
@@ -349,6 +446,7 @@ watch(
 onMounted(() => {
   syncViewport()
   window.visualViewport?.addEventListener('resize', syncViewport)
+  window.addEventListener('keydown', onWindowKeydown)
   pickNext()
   focusInput()
   window.speechSynthesis?.getVoices() // 預先載入語音
@@ -356,6 +454,8 @@ onMounted(() => {
 onBeforeUnmount(() => {
   mic.stop()
   window.visualViewport?.removeEventListener('resize', syncViewport)
+  window.removeEventListener('keydown', onWindowKeydown)
+  cancelRecognize()
 })
 </script>
 
@@ -415,7 +515,13 @@ onBeforeUnmount(() => {
 
     <main class="stage">
       <section class="quiz" @click="focusInput">
-        <div class="pool-count">題庫 {{ pool.length }} 個</div>
+        <div class="quiz-top">
+          <div class="seg answer-seg">
+            <button :class="{ on: !writeMode }" @click.stop="settings.answer = 'type'">看字答拼音</button>
+            <button :class="{ on: writeMode }" @click.stop="settings.answer = 'write'">看拼音手寫</button>
+          </div>
+          <div class="pool-count">題庫 {{ pool.length }} 個</div>
+        </div>
         <div class="mini-stats">
           <span class="good">✓ {{ session.correct }}</span>
           <span class="bad">✗ {{ session.wrong }}</span>
@@ -424,70 +530,107 @@ onBeforeUnmount(() => {
           <span v-if="reviewList.length" class="rv">複習 {{ reviewList.length }}</span>
         </div>
 
-        <div v-if="current" ref="cardEl" class="card" :class="{ ok: card.flash === 'ok', shake: card.shake, kata: current.script === 'kata' }">
+        <div
+          v-if="current"
+          ref="cardEl"
+          class="card"
+          :class="{ ok: card.flash === 'ok', shake: card.shake, kata: current.script === 'kata', prompt: writeMode }"
+        >
           <span class="script-tag">{{ current.script === 'kata' ? '片' : '平' }}</span>
           <span v-if="currentReview !== null" class="review-tag" :title="`複習中：再連續答對 ${REVIEW_STREAK - currentReview} 次`">
             複習 <i v-for="n in REVIEW_STREAK" :key="n" :class="{ done: n <= currentReview }" />
           </span>
-          <div class="kana" :lang="'ja'">{{ current.display }}</div>
-          <div class="hint" :class="{ show: card.hint }">{{ current.romaji.join(' / ') }}</div>
+          <template v-if="writeMode">
+            <div class="romaji">{{ current.romaji[0] }}</div>
+            <div class="script-name">寫出{{ current.script === 'kata' ? '片假名' : '平假名' }}</div>
+          </template>
+          <template v-else>
+            <div class="kana" :lang="'ja'">{{ current.display }}</div>
+            <div class="hint" :class="{ show: card.hint }">{{ current.romaji.join(' / ') }}</div>
+          </template>
         </div>
         <div v-if="current && card.hint && lookalikes.length" class="lookalikes">
           <span class="label">別搞混</span>
           <span v-for="x in lookalikes" :key="x.id" class="la" lang="ja">{{ x.display }}<small>{{ x.romaji[0] }}</small></span>
         </div>
 
-        <input
-          ref="inputEl"
-          class="answer"
-          :class="{ bad: card.shake }"
-          placeholder="輸入羅馬拼音…"
-          autocomplete="off"
-          autocorrect="off"
-          autocapitalize="none"
-          spellcheck="false"
-          enterkeyhint="next"
-          @input="onInput"
-          @compositionend="onInput"
-          @focus="onInputFocus"
-          @keydown="onKeydown"
-        />
+        <template v-if="writeMode">
+          <HandwritePad
+            ref="padEl"
+            :class="{ bad: card.shake }"
+            :guide="card.hint && current ? current.display : ''"
+            @pen-down="cancelRecognize"
+            @stroke="onStroke"
+          />
+          <div class="speech-line">
+            <span v-if="writeErr" class="err">{{ writeErr }}</span>
+            <template v-else-if="written.length">辨識：<b lang="ja">{{ written.join('　') }}</b></template>
+            <template v-else-if="card.hint">照著淡色字形描一次</template>
+            <template v-else>寫在框內，寫對會自動跳下一題</template>
+          </div>
+          <div class="actions write">
+            <button class="btn primary" title="Enter" @click.stop="checkWriting(true)">判定</button>
+            <button class="btn" title="Backspace" @click.stop="undoStroke">↶<span class="label"> 復原</span></button>
+            <button class="btn" title="Delete" @click.stop="resetPad">清除</button>
+            <button class="btn" title="Esc" @click.stop="playSound">🔊<span class="label"> 發音</span></button>
+            <button class="btn" @click.stop="skip">{{ card.hint ? '下一題' : '看答案' }}</button>
+          </div>
+          <div v-if="!isTouch" class="speech-line">Enter：判定　Backspace：復原一筆　Delete：清除　Esc：聽發音</div>
+        </template>
 
-        <div class="actions">
-          <button
-            class="btn mic"
-            :class="{ live: mic.listening.value }"
-            :disabled="!mic.supported"
-            :title="mic.supported ? '開/關語音作答' : '此瀏覽器不支援語音辨識，請用 Chrome / Edge / Safari'"
-            @click.stop="mic.toggle()"
-          >
-            <span class="dot" />
-            {{ mic.listening.value ? '聆聽中…' : '語音作答' }}
-          </button>
-          <button class="btn" title="Esc" @click.stop="playSound">🔊<span class="label"> 發音</span></button>
-          <button class="btn" title="Enter" @click.stop="skip">{{ card.hint ? '下一題' : '看答案' }}</button>
-        </div>
+        <template v-else>
+          <input
+            ref="inputEl"
+            class="answer"
+            :class="{ bad: card.shake }"
+            placeholder="輸入羅馬拼音…"
+            autocomplete="off"
+            autocorrect="off"
+            autocapitalize="none"
+            spellcheck="false"
+            enterkeyhint="next"
+            @input="onInput"
+            @compositionend="onInput"
+            @focus="onInputFocus"
+            @keydown="onKeydown"
+          />
 
-        <div class="speech-line">
-          <template v-if="mic.error.value"><span class="err">{{ mic.error.value }}</span></template>
-          <template v-else-if="speechMiss">聽到「<b>{{ speechMiss }}</b>」，再唸一次</template>
-          <template v-else-if="mic.listening.value">唸出畫面上的假名（連唸 2–3 次如「かかか」較容易辨識）</template>
-          <template v-else-if="!isTouch">Enter：看答案 / 下一題　Esc：聽發音</template>
-        </div>
+          <div class="actions">
+            <button
+              class="btn mic"
+              :class="{ live: mic.listening.value }"
+              :disabled="!mic.supported"
+              :title="mic.supported ? '開/關語音作答' : '此瀏覽器不支援語音辨識，請用 Chrome / Edge / Safari'"
+              @click.stop="mic.toggle()"
+            >
+              <span class="dot" />
+              {{ mic.listening.value ? '聆聽中…' : '語音作答' }}
+            </button>
+            <button class="btn" title="Esc" @click.stop="playSound">🔊<span class="label"> 發音</span></button>
+            <button class="btn" title="Enter" @click.stop="skip">{{ card.hint ? '下一題' : '看答案' }}</button>
+          </div>
 
-        <div v-if="chineseWarn" class="warn">
-          辨識結果看起來是<b>中文</b>，瀏覽器可能沒有使用日文辨識。
-          Safari 用的是 macOS 聽寫：請到「系統設定 → 鍵盤 → 聽寫 → 語言」加入日文；
-          或改用 Chrome / Edge。
-        </div>
+          <div class="speech-line">
+            <template v-if="mic.error.value"><span class="err">{{ mic.error.value }}</span></template>
+            <template v-else-if="speechMiss">聽到「<b>{{ speechMiss }}</b>」，再唸一次</template>
+            <template v-else-if="mic.listening.value">唸出畫面上的假名（連唸 2–3 次如「かかか」較容易辨識）</template>
+            <template v-else-if="!isTouch">Enter：看答案 / 下一題　Esc：聽發音</template>
+          </div>
 
-        <div v-if="mic.supported" class="log">
-          <button class="link" @click.stop="showLog = !showLog">{{ showLog ? '隱藏' : '顯示' }}辨識紀錄</button>
-          <ul v-if="showLog">
-            <li v-if="!speechLog.length" class="empty">還沒有辨識結果</li>
-            <li v-for="l in speechLog" :key="l.key" :class="l.ok ? 'good' : 'bad'">{{ l.ok ? '✓' : '✗' }} {{ l.text }}</li>
-          </ul>
-        </div>
+          <div v-if="chineseWarn" class="warn">
+            辨識結果看起來是<b>中文</b>，瀏覽器可能沒有使用日文辨識。
+            Safari 用的是 macOS 聽寫：請到「系統設定 → 鍵盤 → 聽寫 → 語言」加入日文；
+            或改用 Chrome / Edge。
+          </div>
+
+          <div v-if="mic.supported" class="log">
+            <button class="link" @click.stop="showLog = !showLog">{{ showLog ? '隱藏' : '顯示' }}辨識紀錄</button>
+            <ul v-if="showLog">
+              <li v-if="!speechLog.length" class="empty">還沒有辨識結果</li>
+              <li v-for="l in speechLog" :key="l.key" :class="l.ok ? 'good' : 'bad'">{{ l.ok ? '✓' : '✗' }} {{ l.text }}</li>
+            </ul>
+          </div>
+        </template>
 
         <label class="auto">
           <input v-model="settings.autoSpeak" type="checkbox" />

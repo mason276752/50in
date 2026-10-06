@@ -64,16 +64,36 @@ export function toHiragana(s) {
 
 const ROW_BY_HIRA = new Map(GROUPS.flatMap((g) => g.rows.map((row) => [row[0], { group: g.key, row }])))
 
+// 拗音的其他寫法，由「前字拼音 + 小字」推出來：
+// ちゃ ← chi + ゃ → chya / chiya / chixya / chilya / cha；りょ ← li + ょ → lyo / liyo …
+const SMALL_Y = { ゃ: 'a', ゅ: 'u', ょ: 'o' }
+function youonVariants(hira, listed) {
+  const out = new Set(listed)
+  const v = SMALL_Y[hira[1]]
+  if (!v) return [...out]
+  for (const b of ROW_BY_HIRA.get(hira[0]).row[1].split('|')) {
+    const c = b.slice(0, -1) // 去掉結尾的 i
+    out.add(`${c}y${v}`)
+    out.add(`${b}y${v}`)
+    out.add(`${b}xy${v}`) // 輸入法打小字的寫法
+    out.add(`${b}ly${v}`)
+    if (/^(sh|ch|j)$/.test(c)) out.add(c + v)
+  }
+  return [...out]
+}
+
 function makeItem(hira, script) {
   const { group, row } = ROW_BY_HIRA.get(hira)
   const [, romaji, extraSpeech] = row
+  const listed = romaji.split('|')
   return {
     id: `${script}:${hira}`,
     script,
     group,
     hira,
     display: script === 'kata' ? toKatakana(hira) : hira,
-    romaji: romaji.split('|'),
+    romaji: listed, // 顯示用
+    accept: hira.length === 2 ? youonVariants(hira, listed) : listed, // 作答可接受的所有寫法
     speech: extraSpeech ? [hira, extraSpeech] : [hira],
   }
 }
@@ -168,8 +188,8 @@ export function matchTyped(raw, item) {
 
   const v = compact.toLowerCase().replace(/[^a-z]/g, '')
   if (!v) return 'partial'
-  if (item.romaji.includes(v)) return 'ok'
-  if (item.romaji.some((r) => r.startsWith(v))) return 'partial'
+  if (item.accept.includes(v)) return 'ok'
+  if (item.accept.some((r) => r.startsWith(v))) return 'partial'
   return 'wrong'
 }
 
@@ -240,7 +260,7 @@ export function matchSpeech(text, item) {
   if (!raw) return false
 
   const words = raw.toLowerCase().replace(/[^a-z\s]/g, ' ').split(/\s+/).filter(Boolean)
-  if (words.some((w) => item.romaji.includes(w) || item.speech.includes(LATIN[w]))) return true
+  if (words.some((w) => item.accept.includes(w) || item.speech.includes(LATIN[w]))) return true
 
   const t = toHiragana(raw).replace(PUNCT, '')
   if (!t) return false
