@@ -266,7 +266,7 @@ button { font: inherit; color: inherit; cursor: pointer; }
 }
 .pad-guide {
   position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
-  font-size: 68cqw; line-height: 1; color: color-mix(in srgb, var(--muted) 30%, transparent); pointer-events: none; user-select: none;
+  white-space: nowrap; line-height: 1; color: color-mix(in srgb, var(--muted) 30%, transparent); pointer-events: none; user-select: none;
 }
 .btn.primary { background: var(--ink); color: var(--bg); border-color: var(--ink); }
 .actions.write { max-width: 420px; }

@@ -1,9 +1,11 @@
 <script setup>
-import { ref, onMounted, onBeforeUnmount } from 'vue'
+import { ref, computed, onMounted, onBeforeUnmount } from 'vue'
 
 // 手寫板：記錄筆畫（給辨識用），每寫完一筆 emit('stroke')，下筆時 emit('pen-down')
 const props = defineProps({ guide: { type: String, default: '' } })
 const emit = defineEmits(['stroke', 'pen-down'])
+// 拗音兩個字要並排塞進框裡，字縮小
+const guideSize = computed(() => (Array.from(props.guide).length > 1 ? 44 : 68))
 
 const canvasEl = ref(null)
 const strokes = [] // [[xs, ys, ts], …]
@@ -115,7 +117,7 @@ onBeforeUnmount(() => {
 
 <template>
   <div class="pad">
-    <div v-if="props.guide" class="pad-guide" lang="ja">{{ props.guide }}</div>
+    <div v-if="props.guide" class="pad-guide" :style="{ fontSize: `${guideSize}cqw` }" lang="ja">{{ props.guide }}</div>
     <div class="pad-cross" />
     <canvas
       ref="canvasEl"
