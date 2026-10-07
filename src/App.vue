@@ -4,10 +4,13 @@ import { GROUPS, SCRIPTS, SIMILAR_SETS, buildPool, buildSimilarPool, similarTo, 
 import { useSpeechRecognition, speak } from './useSpeech'
 import { recognize, matchWritten } from './handwriting'
 import HandwritePad from './HandwritePad.vue'
-import { WORD_CATS, LEVELS, DIRECTIONS, buildWordPool, loadWords, wordById, wordsByCat, makeChoices } from './words'
+import JpWord from './JpWord.vue'
+import { playSfx, preloadSfx } from './sfx'
+import { WORD_CATS, LEVELS, DIRECTIONS, buildWordPool, loadWords, wordById, wordsByCat, makeChoices, plainZh, baseKey } from './words'
 
 const LS_SETTINGS = 'kana-quiz:settings'
 const LS_STATS = 'kana-quiz:stats'
+const LS_CONFUSE = 'kana-quiz:confusions'
 
 function load(key, fallback) {
   try {
@@ -28,6 +31,7 @@ const settings = reactive(
     scripts: ['hira', 'kata'],
     groups: ['seion', 'dakuon', 'handakuon', 'youon', 'youon_daku'],
     autoSpeak: false,
+    sfx: true, // 答對 / 答錯音效
     mode: 'normal', // 'normal' 依分類 | 'similar' 易混淆
     similarOff: [], // 易混淆模式下關掉的組（記關掉的，預設全開）
     answer: 'type', // 'type' 看假名打拼音 | 'write' 看拼音手寫假名
@@ -35,6 +39,7 @@ const settings = reactive(
     vocabDir: 'ja2zh', // 'ja2zh' 日翻中 | 'zh2ja' 中翻日
     vocabCats: WORD_CATS.map((c) => c.key),
     vocabLevels: LEVELS.map((l) => l.key),
+    vocabShow: 'kana', // 日文怎麼顯示：'kana' 假名 | 'kanji' 漢字 | 'both' 漢字上標假名
   }),
 )
 // 舊版題庫的分類 key 已經不存在
@@ -229,7 +234,7 @@ function showCard(next) {
 
   current.value = next
   Object.assign(card, {
-    options: vocab.value ? makeChoices(next) : [],
+    options: vocab.value ? makeChoices(next, confusedWith(next)) : [],
     wrongIds: [],
     isNew: !kanaStats[sk(next.id)], missed: false, hint: false, startedAt: performance.now(), flash: '', shake: false })
   clearInput()
@@ -243,7 +248,16 @@ function answerIsSpoken() {
   return current.value?.dir === 'zh2ja'
 }
 
-function markWrong() {
+// 播音效；麥克風開著時先暫停比對，免得收到音效聲
+function feedback(kind) {
+  if (!settings.sfx) return
+  ignoreSpeechUntil = Math.max(ignoreSpeechUntil, performance.now() + 800)
+  playSfx(kind)
+}
+
+// silent：按「看答案」不算真的答錯，不播錯誤音效
+function markWrong({ silent = false } = {}) {
+  if (!silent) feedback('bad')
   if (!card.missed) {
     card.missed = true
     session.wrong++
@@ -280,14 +294,16 @@ function markCorrect() {
   history.value.unshift({ item, ok: !card.missed, key: performance.now() })
   history.value.length = Math.min(history.value.length, 24)
   card.flash = 'ok'
-  if (settings.autoSpeak && answerIsSpoken()) playSound()
+  feedback('ok')
+  // 中→日答完才唸，等音效播完再唸，不要疊在一起
+  if (settings.autoSpeak && answerIsSpoken()) setTimeout(playSound, settings.sfx ? 450 : 0)
   setTimeout(pickNext, vocab.value ? 650 : 220) // 選擇題多留一下，看清楚各選項的意思
 }
 
 function skip() {
   if (!current.value || locked) return
   if (!card.hint) {
-    markWrong() // 第一次按：顯示答案
+    markWrong({ silent: true }) // 第一次按：顯示答案
     return
   }
   locked = true
@@ -302,8 +318,40 @@ function choose(opt) {
   if (!current.value || locked) return
   if (opt.id === current.value.id) return markCorrect()
   if (!card.wrongIds.includes(opt.id)) card.wrongIds.push(opt.id)
+  recordConfusion(current.value, opt)
   markWrong()
 }
+
+// 選錯的組合記下來（兩個方向都算），之後考其中一個時優先把另一個放進選項
+const confusions = load(LS_CONFUSE, {}) // baseKey → { baseKey: 選錯次數 }
+function recordConfusion(a, b) {
+  for (const [x, y] of [
+    [baseKey(a), baseKey(b)],
+    [baseKey(b), baseKey(a)],
+  ]) {
+    const m = (confusions[x] ||= {})
+    m[y] = (m[y] || 0) + 1
+  }
+  save(LS_CONFUSE, confusions)
+}
+function confusedWith(item) {
+  const m = confusions[baseKey(item)]
+  return m ? Object.keys(m).sort((x, y) => m[y] - m[x]) : []
+}
+const SHOW_MODES = [
+  { key: 'kana', label: '假名' },
+  { key: 'kanji', label: '漢字' },
+  { key: 'both', label: '漢字+假名' },
+]
+// 主要顯示沒給到的那一半（漢字或讀音），答完才補上；同音詞只給假名分不出來，一開始就補漢字
+function jpSub(w, revealed) {
+  if (w.kana === w.ja) return ''
+  if (settings.vocabShow === 'kana') return revealed || w.homophone ? w.ja : ''
+  if (settings.vocabShow === 'kanji') return revealed ? w.kana : ''
+  return ''
+}
+const jpMain = (w) => (settings.vocabShow === 'kana' ? w.kana : w.ja)
+
 // 字越多字越小，長單字也塞得進卡片
 function wordSize(text) {
   return { fontSize: `${Math.min(30, 84 / Math.max(Array.from(text).length, 1))}cqw` }
@@ -420,6 +468,12 @@ const mic = useSpeechRecognition((alts, isFinal) => {
 watch(current, () => (speechMiss.value = ''))
 const showLog = ref(false)
 
+function toggleAutoSpeak() {
+  settings.autoSpeak = !settings.autoSpeak
+  // 打開時順便唸目前這題，不用等下一題才知道有沒有作用
+  if (settings.autoSpeak && !locked && !answerIsSpoken()) playSound()
+}
+
 function playSound() {
   if (!current.value) return
   // 播放時暫停比對，避免麥克風收到喇叭聲音自動答對
@@ -481,6 +535,8 @@ function resetAll() {
   for (const k of Object.keys(kanaStats)) delete kanaStats[k]
   history.value = []
   reviewDue.clear()
+  for (const k of Object.keys(confusions)) delete confusions[k]
+  save(LS_CONFUSE, confusions)
   pickNext()
 }
 
@@ -579,6 +635,7 @@ onMounted(() => {
   pickNext()
   focusInput()
   window.speechSynthesis?.getVoices() // 預先載入語音
+  preloadSfx()
 })
 onBeforeUnmount(() => {
   mic.stop()
@@ -678,10 +735,35 @@ onBeforeUnmount(() => {
               {{ d.label }}
             </button>
           </div>
+          <div v-if="vocab" class="seg show-seg" title="日文的顯示方式">
+            <button v-for="m in SHOW_MODES" :key="m.key" :class="{ on: settings.vocabShow === m.key }" @click.stop="settings.vocabShow = m.key">
+              {{ m.label }}
+            </button>
+          </div>
           <div v-else class="seg answer-seg">
             <button :class="{ on: !writeMode }" @click.stop="settings.answer = 'type'">看字答拼音</button>
             <button :class="{ on: writeMode }" @click.stop="settings.answer = 'write'">看拼音手寫</button>
           </div>
+          <button
+            class="auto-toggle"
+            :class="{ on: settings.autoSpeak }"
+            role="switch"
+            :aria-checked="settings.autoSpeak"
+            title="每題出現時自動唸一次（中→日在答完後唸）"
+            @click.stop="toggleAutoSpeak"
+          >
+            <i />自動發音
+          </button>
+          <button
+            class="auto-toggle sfx-toggle"
+            :class="{ on: settings.sfx }"
+            role="switch"
+            :aria-checked="settings.sfx"
+            title="答對、答錯時播放音效"
+            @click.stop="settings.sfx = !settings.sfx"
+          >
+            <i />音效
+          </button>
           <div class="pool-count">
             題庫 {{ pool.length }} · 已掌握 {{ progress.mastered.length }} · 學習中 {{ progress.learning.length }}
           </div>
@@ -708,11 +790,9 @@ onBeforeUnmount(() => {
           </span>
           <span v-else-if="card.isNew" class="review-tag">{{ vocab ? '新單字' : '新字' }}</span>
           <template v-if="vocab">
-            <!-- 主要顯示讀音：很多漢字詞中日同形（水、山…），直接給漢字等於送分 -->
             <template v-if="current.dir === 'ja2zh'">
-              <div class="word" lang="ja" :style="wordSize(current.kana)">{{ current.kana }}</div>
-              <!-- 同音詞只看讀音分不出來，直接附上漢字 -->
-              <div class="word-reading" lang="ja">{{ (locked || card.hint || current.homophone) && current.kana !== current.ja ? current.ja : '' }}</div>
+              <JpWord class="word" :class="{ ruby: settings.vocabShow === 'both' }" :word="current" :mode="settings.vocabShow" :style="wordSize(jpMain(current))" />
+              <div class="word-reading" lang="ja">{{ jpSub(current, locked || card.hint) }}</div>
             </template>
             <div v-else class="word" :style="wordSize(current.zh)">{{ current.zh }}</div>
           </template>
@@ -735,12 +815,12 @@ onBeforeUnmount(() => {
             <button v-for="(opt, i) in card.options" :key="opt.id" class="opt" :class="optionClass(opt)" @click.stop="choose(opt)">
               <span class="num">{{ i + 1 }}</span>
               <template v-if="current.dir === 'ja2zh'">
-                <span class="main">{{ opt.zh }}</span>
-                <small v-if="locked || card.hint" lang="ja">{{ opt.kana }}{{ opt.kana !== opt.ja ? `（${opt.ja}）` : '' }}</small>
+                <span class="main">{{ locked || card.hint ? opt.zh : plainZh(opt.zh) }}</span>
+                <small v-if="locked || card.hint" lang="ja">{{ opt.ja }}{{ opt.kana !== opt.ja ? `（${opt.kana}）` : '' }}</small>
               </template>
               <template v-else>
-                <span class="main" lang="ja">{{ opt.kana }}</span>
-                <small v-if="locked || card.hint" class="zh">{{ opt.kana !== opt.ja ? `${opt.ja}・` : '' }}{{ opt.zh }}</small>
+                <JpWord class="main" :word="opt" :mode="settings.vocabShow" />
+                <small v-if="locked || card.hint" class="zh">{{ jpSub(opt, true) ? `${jpSub(opt, true)}・` : '' }}{{ opt.zh }}</small>
               </template>
             </button>
           </div>
@@ -831,11 +911,6 @@ onBeforeUnmount(() => {
             </ul>
           </div>
         </template>
-
-        <label class="auto">
-          <input v-model="settings.autoSpeak" type="checkbox" />
-          出題時自動播放發音
-        </label>
       </section>
 
       <aside class="side">

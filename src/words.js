@@ -1,5 +1,6 @@
 // 單字題庫：JLPT N5–N1 約 7800 詞（詞表來源 tanos.co.uk JLPT 詞彙表，CC BY；中文釋義與情境分類另行整理）
-// 資料在 data/vocab.tsv，每行：難度(1=N5…5=N1) 分類 日文 讀音(與日文相同時留空) 中文 英文關鍵字
+// 資料在 data/vocab.tsv，每行：難度(1=N5…5=N1) 分類 詞性 日文 讀音(與日文相同時留空) 中文 英文關鍵字
+// 詞性：v 動詞 | i い形容詞 | k 副詞・連接詞・文法 | g 招呼・慣用語 | n 名詞及其他（含な形容詞）
 // 檔案約 180KB(gzip)，切到單字模式才載入
 
 export const WORD_CATS = [
@@ -46,8 +47,8 @@ function parse(raw) {
     .split('\n')
     .filter(Boolean)
     .map((line) => {
-      const [level, group, ja, reading, zh, en] = line.split('\t')
-      return { level: Number(level), group, ja, kana: reading || ja, zh, en: en ? en.split(' ') : [] }
+      const [level, group, pos, ja, reading, zh, en] = line.split('\t')
+      return { level: Number(level), group, pos, ja, kana: reading || ja, zh, en: en ? en.split(' ') : [] }
     })
   // 同音詞（はし＝橋、箸、端…）只看讀音分不出來，出題時要連漢字一起給
   const sameKana = new Map()
@@ -115,6 +116,14 @@ function shuffle(list) {
 // 去掉（他動）、（正式）這類補充說明，比較意思本身
 const meanings = (zh) => zh.replace(/（[^）]*）/g, '').replace(/～/g, '').split('；')
 
+// 選項上不顯示括號註記：只有一個選項標（謙讓）的話等於提示答案
+export function plainZh(zh) {
+  return zh.replace(/（[^）]*）/g, '') || zh
+}
+
+// 不分出題方向的單字 key，用來記「哪兩個字容易搞混」
+export const baseKey = (w) => `${w.ja}:${w.kana}`
+
 // 意思太接近的不能同時當選項（例如 美しい / 綺麗 都是「漂亮」）
 function tooClose(a, b) {
   if (a.ja === b.ja || a.kana === b.kana) return true
@@ -123,19 +132,54 @@ function tooClose(a, b) {
   return a.en.some((w) => b.en.includes(w))
 }
 
-// 四選一：其他選項用別的考題的答案。同情境、難度接近的優先，比較有鑑別度
-export function makeChoices(item) {
-  const scored = []
-  for (const w of ALL[item.dir]) {
-    if (w === item) continue
-    scored.push([(w.group === item.group ? 0 : 2) + Math.abs(w.level - item.level) + Math.random() * 1.5, w])
+// 讀音相似度 0–1（編輯距離），中→日用來挑長得像的假名：こうしょう / こうしょ / ごうしょう
+function kanaSimilarity(a, b) {
+  const m = a.length
+  const n = b.length
+  let prev = Array.from({ length: n + 1 }, (_, j) => j)
+  for (let i = 1; i <= m; i++) {
+    const cur = [i]
+    for (let j = 1; j <= n; j++) cur[j] = Math.min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1))
+    prev = cur
   }
-  scored.sort((a, b) => a[0] - b[0])
+  return 1 - prev[n] / Math.max(m, n)
+}
+
+const KANJI = /[\u4e00-\u9fff々]/g
+const sharedKanji = (a, b) => {
+  const ka = a.ja.match(KANJI) || []
+  return (b.ja.match(KANJI) || []).filter((c) => ka.includes(c)).length
+}
+
+// 分數越低越適合當錯誤選項
+function distractorScore(item, w) {
+  let s = Math.random() * 1.2
+  if (w.pos !== item.pos) s += 4 // 詞性不同，一眼就能刪掉
+  if (w.group !== item.group) s += 1.5
+  s += Math.abs(w.level - item.level) * 0.7
+  if (item.dir === 'zh2ja') {
+    s += (1 - kanaSimilarity(item.kana, w.kana)) * 4 // 讀音越像越好
+    s -= Math.min(sharedKanji(item, w), 2) * 0.7 // 有共同漢字（顯示漢字時容易混）
+  }
+  return s
+}
+
+// 四選一：其他選項用別的考題的答案
+// 1. 以前選錯過的字優先放進來（最多 2 個） 2. 其餘挑詞性相同、同情境、難度接近（中→日再看讀音相似）
+export function makeChoices(item, confusedKeys = []) {
   const picked = []
+  const ok = (w) => w !== item && !tooClose(item, w) && !picked.some((p) => tooClose(p, w))
+  for (const key of confusedKeys) {
+    const w = ALL[item.dir].find((x) => baseKey(x) === key)
+    if (w && ok(w)) picked.push(w)
+    if (picked.length === 2) break
+  }
+  const scored = []
+  for (const w of ALL[item.dir]) if (w !== item) scored.push([distractorScore(item, w), w])
+  scored.sort((a, b) => a[0] - b[0])
   for (const [, w] of scored) {
-    if (tooClose(item, w) || picked.some((p) => tooClose(p, w))) continue
-    picked.push(w)
     if (picked.length === 3) break
+    if (ok(w)) picked.push(w)
   }
   return shuffle([item, ...picked])
 }
