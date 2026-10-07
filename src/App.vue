@@ -1,7 +1,7 @@
 <script setup>
 import { ref, reactive, computed, watch, nextTick, onMounted, onBeforeUnmount } from 'vue'
 import { GROUPS, SCRIPTS, SIMILAR_SETS, buildPool, buildSimilarPool, similarTo, matchTyped, matchSpeech, looksChinese } from './kana'
-import { useSpeechRecognition, speak } from './useSpeech'
+import { useSpeechRecognition, useJapaneseVoices, speak } from './useSpeech'
 import { recognize, matchWritten } from './handwriting'
 import HandwritePad from './HandwritePad.vue'
 import JpWord from './JpWord.vue'
@@ -32,6 +32,8 @@ const settings = reactive(
     groups: ['seion', 'dakuon', 'handakuon', 'youon', 'youon_daku'],
     autoSpeak: false,
     sfx: true, // 答對 / 答錯音效
+    speechRate: 0.7, // 發音速度（1 = 正常）
+    voiceURI: '', // 選用的日文語音，空字串 = 自動挑
     mode: 'normal', // 'normal' 依分類 | 'similar' 易混淆
     similarOff: [], // 易混淆模式下關掉的組（記關掉的，預設全開）
     answer: 'type', // 'type' 看假名打拼音 | 'write' 看拼音手寫假名
@@ -244,8 +246,9 @@ function showCard(next) {
 }
 
 // 中翻日的題目，發音就是答案：自動播放改成答完才播
+// 中→日、漢→假的發音就是答案：自動播放改成答完才唸
 function answerIsSpoken() {
-  return current.value?.dir === 'zh2ja'
+  return current.value?.dir === 'zh2ja' || current.value?.dir === 'kanji2kana'
 }
 
 // 播音效；麥克風開著時先暫停比對，免得收到音效聲
@@ -318,7 +321,7 @@ function choose(opt) {
   if (!current.value || locked) return
   if (opt.id === current.value.id) return markCorrect()
   if (!card.wrongIds.includes(opt.id)) card.wrongIds.push(opt.id)
-  recordConfusion(current.value, opt)
+  if (!opt.fake) recordConfusion(current.value, opt) // 造出來的錯誤讀音不是真的字，不用記
   markWrong()
 }
 
@@ -468,6 +471,32 @@ const mic = useSpeechRecognition((alts, isFinal) => {
 watch(current, () => (speechMiss.value = ''))
 const showLog = ref(false)
 
+// ---- 發音設定 ----
+const SPEECH_RATES = [
+  { value: 0.5, label: '很慢' },
+  { value: 0.7, label: '慢' },
+  { value: 0.9, label: '正常' },
+]
+const jaVoices = useJapaneseVoices()
+const noJaVoice = computed(() => jaVoices.supported && jaVoices.loaded.value && !jaVoices.voices.value.length)
+// 依作業系統給安裝日文語音的步驟
+const installHint = (() => {
+  const ua = navigator.userAgent
+  if (/iPhone|iPad|iPod/.test(ua)) return 'iPhone／iPad：設定 → 輔助使用 → 朗讀內容 → 聲音 → 日文，下載一個聲音後重新開啟網頁。'
+  if (/Android/.test(ua)) return 'Android：設定 → 系統 → 語言 → 文字轉語音輸出 → Google 語音服務 → 安裝語音資料 → 日本語。'
+  if (/Mac/.test(ua)) return 'Mac：系統設定 → 輔助使用 → 朗讀內容 → 系統聲音 → 管理聲音，勾選一個日文聲音（例如 Kyoko）。'
+  if (/Windows/.test(ua)) return 'Windows：設定 → 時間與語言 → 語音 → 新增語音 → 日本語，安裝後重新開啟瀏覽器。'
+  return '請在作業系統的「文字轉語音」設定裡安裝日文語音，或改用 Chrome。'
+})()
+function setRate(v) {
+  settings.speechRate = v
+  playSound() // 直接唸一次讓你聽差別
+}
+function setVoice(uri) {
+  settings.voiceURI = uri
+  playSound()
+}
+
 function toggleAutoSpeak() {
   settings.autoSpeak = !settings.autoSpeak
   // 打開時順便唸目前這題，不用等下一題才知道有沒有作用
@@ -478,7 +507,10 @@ function playSound() {
   if (!current.value) return
   // 播放時暫停比對，避免麥克風收到喇叭聲音自動答對
   ignoreSpeechUntil = Infinity
-  speak(current.value.say ?? current.value.hira, () => (ignoreSpeechUntil = performance.now() + 500))
+  speak(current.value.say ?? current.value.hira, () => (ignoreSpeechUntil = performance.now() + 500), {
+    rate: settings.speechRate,
+    voiceURI: settings.voiceURI,
+  })
 }
 
 // ---- 鍵盤 ----
@@ -735,12 +767,12 @@ onBeforeUnmount(() => {
               {{ d.label }}
             </button>
           </div>
-          <div v-if="vocab" class="seg show-seg" title="日文的顯示方式">
+          <div v-if="vocab && settings.vocabDir !== 'kanji2kana'" class="seg show-seg" title="日文的顯示方式">
             <button v-for="m in SHOW_MODES" :key="m.key" :class="{ on: settings.vocabShow === m.key }" @click.stop="settings.vocabShow = m.key">
               {{ m.label }}
             </button>
           </div>
-          <div v-else class="seg answer-seg">
+          <div v-if="!vocab" class="seg answer-seg">
             <button :class="{ on: !writeMode }" @click.stop="settings.answer = 'type'">看字答拼音</button>
             <button :class="{ on: writeMode }" @click.stop="settings.answer = 'write'">看拼音手寫</button>
           </div>
@@ -784,7 +816,7 @@ onBeforeUnmount(() => {
           class="card"
           :class="{ ok: card.flash === 'ok', shake: card.shake, kata: current.script === 'kata', prompt: writeMode || vocab }"
         >
-          <span class="script-tag">{{ vocab ? `${LEVELS[current.level - 1].label} · ${current.dir === 'ja2zh' ? '日→中' : '中→日'}` : current.script === 'kata' ? '片' : '平' }}</span>
+          <span class="script-tag">{{ vocab ? `${LEVELS[current.level - 1].label} · ${DIRECTIONS.find((d) => d.key === current.dir).label}` : current.script === 'kata' ? '片' : '平' }}</span>
           <span v-if="currentReview !== null" class="review-tag" :title="`複習中：再連續答對 ${REVIEW_STREAK - currentReview} 次`">
             複習 <i v-for="n in REVIEW_STREAK" :key="n" :class="{ done: n <= currentReview }" />
           </span>
@@ -793,6 +825,11 @@ onBeforeUnmount(() => {
             <template v-if="current.dir === 'ja2zh'">
               <JpWord class="word" :class="{ ruby: settings.vocabShow === 'both' }" :word="current" :mode="settings.vocabShow" :style="wordSize(jpMain(current))" />
               <div class="word-reading" lang="ja">{{ jpSub(current, locked || card.hint) }}</div>
+            </template>
+            <!-- 漢→假：只給漢字，答完補上中文意思 -->
+            <template v-else-if="current.dir === 'kanji2kana'">
+              <JpWord class="word" :word="current" mode="kanji" :style="wordSize(current.ja)" />
+              <div class="word-reading">{{ locked || card.hint ? current.zh : '' }}</div>
             </template>
             <div v-else class="word" :style="wordSize(current.zh)">{{ current.zh }}</div>
           </template>
@@ -817,6 +854,11 @@ onBeforeUnmount(() => {
               <template v-if="current.dir === 'ja2zh'">
                 <span class="main">{{ locked || card.hint ? opt.zh : plainZh(opt.zh) }}</span>
                 <small v-if="locked || card.hint" lang="ja">{{ opt.ja }}{{ opt.kana !== opt.ja ? `（${opt.kana}）` : '' }}</small>
+              </template>
+              <template v-else-if="current.dir === 'kanji2kana'">
+                <span class="main" lang="ja">{{ opt.kana }}</span>
+                <small v-if="(locked || card.hint) && opt.fake" class="fake">沒有這個讀法</small>
+                <small v-else-if="locked || card.hint" class="zh">{{ opt.ja }}・{{ plainZh(opt.zh) }}</small>
               </template>
               <template v-else>
                 <JpWord class="main" :word="opt" :mode="settings.vocabShow" />
@@ -914,6 +956,36 @@ onBeforeUnmount(() => {
       </section>
 
       <aside class="side">
+        <div class="block voice-block">
+          <h3>發音設定</h3>
+          <template v-if="!jaVoices.supported">
+            <p class="voice-warn">這個瀏覽器不支援語音發音，請改用 Chrome、Edge 或 Safari。</p>
+          </template>
+          <template v-else>
+            <div class="voice-row">
+              <span>速度</span>
+              <div class="seg">
+                <button v-for="r in SPEECH_RATES" :key="r.value" :class="{ on: settings.speechRate === r.value }" @click="setRate(r.value)">
+                  {{ r.label }}
+                </button>
+              </div>
+            </div>
+            <div v-if="jaVoices.voices.value.length > 1" class="voice-row">
+              <span>聲音</span>
+              <select :value="settings.voiceURI" @change="setVoice($event.target.value)">
+                <option value="">自動</option>
+                <option v-for="v in jaVoices.voices.value" :key="v.voiceURI" :value="v.voiceURI">
+                  {{ v.name }}{{ v.localService ? '' : '（線上）' }}
+                </option>
+              </select>
+            </div>
+            <p v-else-if="jaVoices.voices.value.length === 1" class="voice-note">聲音：{{ jaVoices.voices.value[0].name }}</p>
+            <p v-if="noJaVoice" class="voice-warn">
+              這台裝置沒有日文語音，發音可能是中文腔或沒有聲音。<br />{{ installHint }}
+            </p>
+          </template>
+        </div>
+
         <div class="stats">
           <div><b>{{ session.correct }}</b><small>答對</small></div>
           <div><b>{{ session.wrong }}</b><small>答錯</small></div>
@@ -972,7 +1044,7 @@ onBeforeUnmount(() => {
 
     <section v-if="showChart" class="chart">
       <p v-if="vocab" class="credit">
-        詞表來源：<a href="http://www.tanos.co.uk/jlpt/" target="_blank" rel="noopener">tanos.co.uk JLPT 詞彙表</a>（CC BY），中文釋義與分類另行整理
+        詞表來源：<a href="http://www.tanos.co.uk/jlpt/" target="_blank" rel="noopener">tanos.co.uk JLPT 詞彙表</a>（CC BY），振假名依 <a href="https://www.edrdg.org/wiki/index.php/KANJIDIC_Project" target="_blank" rel="noopener">KANJIDIC</a>（EDRDG，CC BY-SA）切分，中文釋義與分類另行整理
       </p>
       <p v-if="vocab && !chartSections[0].groups.length" class="credit">還沒有學過的單字</p>
       <div v-for="sec in chartSections" :key="sec.key">

@@ -78,15 +78,49 @@ export function useSpeechRecognition(onText) {
   return { supported, listening, heard, error, start, stop, toggle }
 }
 
-export function speak(text, onEnd) {
-  if (!('speechSynthesis' in window)) return
+// ---- 語音合成（發音）----
+const synth = typeof window !== 'undefined' ? window.speechSynthesis : undefined
+
+// 聲音品質比較好的優先當預設
+const PREFERRED = /Google|Nanami|Kyoko|O-Ren|Otoya|Haruka|Ayumi/i
+
+// 列出裝置上的日文語音。有些瀏覽器一開始回傳空清單，要等 voiceschanged；
+// 有些永遠不會觸發，所以最多等 1.5 秒就當作載入完成
+export function useJapaneseVoices() {
+  const voices = ref([])
+  const loaded = ref(!synth)
+  if (!synth) return { supported: false, voices, loaded }
+
+  const refresh = () => {
+    const list = synth.getVoices().filter((v) => v.lang.replace('_', '-').toLowerCase().startsWith('ja'))
+    list.sort((a, b) => PREFERRED.test(b.name) - PREFERRED.test(a.name))
+    voices.value = list
+    if (list.length || synth.getVoices().length) loaded.value = true
+  }
+  refresh()
+  synth.addEventListener?.('voiceschanged', refresh)
+  const timer = setTimeout(() => {
+    refresh()
+    loaded.value = true
+  }, 1500)
+  onBeforeUnmount(() => {
+    clearTimeout(timer)
+    synth.removeEventListener?.('voiceschanged', refresh)
+  })
+  return { supported: true, voices, loaded }
+}
+
+// voiceURI 沒指定或找不到時，用第一個（品質較好的）日文語音
+export function speak(text, onEnd, { rate = 0.8, voiceURI = '' } = {}) {
+  if (!synth) return
   const u = new SpeechSynthesisUtterance(text)
   u.lang = 'ja-JP'
-  u.rate = 0.8
-  const voice = speechSynthesis.getVoices().find((v) => v.lang.startsWith('ja'))
+  u.rate = rate
+  const ja = synth.getVoices().filter((v) => v.lang.replace('_', '-').toLowerCase().startsWith('ja'))
+  const voice = ja.find((v) => v.voiceURI === voiceURI) || ja.find((v) => PREFERRED.test(v.name)) || ja[0]
   if (voice) u.voice = voice
   u.onend = onEnd
   u.onerror = onEnd
-  speechSynthesis.cancel()
-  speechSynthesis.speak(u)
+  synth.cancel()
+  synth.speak(u)
 }

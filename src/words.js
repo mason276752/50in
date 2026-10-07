@@ -1,5 +1,7 @@
 // 單字題庫：JLPT N5–N1 約 7800 詞（詞表來源 tanos.co.uk JLPT 詞彙表，CC BY；中文釋義與情境分類另行整理）
-// 資料在 data/vocab.tsv，每行：難度(1=N5…5=N1) 分類 詞性 日文 讀音(與日文相同時留空) 中文 英文關鍵字
+// 資料在 data/vocab.tsv，每行：難度(1=N5…5=N1) 分類 詞性 日文 讀音(與日文相同時留空) 中文 英文關鍵字 振假名
+// 振假名是產生題庫時用 KANJIDIC（EDRDG，CC BY-SA）的漢字讀音逐字切好的：「一=いち|部=ぶ|分=ぶん」，
+// 假名段不標；熟字訓（明日=あした）整段標
 // 詞性：v 動詞 | i い形容詞 | k 副詞・連接詞・文法 | g 招呼・慣用語 | n 名詞及其他（含な形容詞）
 // 檔案約 180KB(gzip)，切到單字模式才載入
 
@@ -36,10 +38,16 @@ export const LEVELS = [
 export const DIRECTIONS = [
   { key: 'ja2zh', label: '日→中' },
   { key: 'zh2ja', label: '中→日' },
+  { key: 'kanji2kana', label: '漢→假' }, // 看漢字選讀音
 ]
 
-let ALL = null // { ja2zh: [...], zh2ja: [...] }
+let ALL = null // { ja2zh: [...], zh2ja: [...], kanji2kana: [...] }
 const BY_ID = new Map()
+// 單一漢字 → 題庫裡出現過的讀音，分兩種語境（用來造「唸錯」的選項）：
+// comp：熟語裡，前後也是漢字（学校 的 学＝がっ）；kun：後面接假名或單獨成詞（学ぶ 的 学＝まな）
+const KANJI_READINGS = { comp: new Map(), kun: new Map() }
+const isKanjiSeg = (seg) => seg && seg[1] != null
+const READINGS_OF_JA = new Map() // 寫法 → 所有正確讀音（明日：あした、あす）
 let loading = null
 
 function parse(raw) {
@@ -47,12 +55,33 @@ function parse(raw) {
     .split('\n')
     .filter(Boolean)
     .map((line) => {
-      const [level, group, pos, ja, reading, zh, en] = line.split('\t')
-      return { level: Number(level), group, pos, ja, kana: reading || ja, zh, en: en ? en.split(' ') : [] }
+      const [level, group, pos, ja, reading, zh, en, furi] = line.split('\t')
+      return {
+        level: Number(level),
+        group,
+        pos,
+        ja,
+        kana: reading || ja,
+        zh,
+        en: en ? en.split(' ') : [],
+        furi: furi ? furi.split('|').map((seg) => seg.split('=')) : null, // [[漢字, 讀音], [假名]]
+      }
     })
   // 同音詞（はし＝橋、箸、端…）只看讀音分不出來，出題時要連漢字一起給
   const sameKana = new Map()
   for (const r of rows) sameKana.set(r.kana, (sameKana.get(r.kana) || 0) + 1)
+
+  for (const r of rows) {
+    if (!READINGS_OF_JA.has(r.ja)) READINGS_OF_JA.set(r.ja, new Set())
+    READINGS_OF_JA.get(r.ja).add(r.kana)
+    const segs = r.furi || []
+    segs.forEach(([text, rt], i) => {
+      if (!rt || text.length !== 1) return
+      const map = KANJI_READINGS[segContext(segs, i)]
+      if (!map.has(text)) map.set(text, new Set())
+      map.get(text).add(rt)
+    })
+  }
 
   ALL = {}
   for (const { key: dir } of DIRECTIONS) {
@@ -88,8 +117,9 @@ export function buildWordPool(dir, cats, levels) {
   const out = []
   for (const { key: level } of LEVELS) {
     if (!levels.includes(level)) continue
+    // 漢→假只考有漢字的詞
     const lists = WORD_CATS.filter((c) => cats.includes(c.key)).map((c) =>
-      ALL[dir].filter((w) => w.group === c.key && w.level === level),
+      ALL[dir].filter((w) => w.group === c.key && w.level === level && (dir !== 'kanji2kana' || w.ja !== w.kana)),
     )
     for (let i = 0; lists.some((l) => i < l.length); i++) {
       for (const l of lists) if (l[i]) out.push(l[i])
@@ -126,6 +156,7 @@ export const baseKey = (w) => `${w.ja}:${w.kana}`
 
 // 意思太接近的不能同時當選項（例如 美しい / 綺麗 都是「漂亮」）
 function tooClose(a, b) {
+  if (a.fake || b.fake) return a.kana === b.kana
   if (a.ja === b.ja || a.kana === b.kana) return true
   const ma = meanings(a.zh)
   if (meanings(b.zh).some((x) => ma.includes(x))) return true
@@ -157,18 +188,90 @@ function distractorScore(item, w) {
   if (w.pos !== item.pos) s += 4 // 詞性不同，一眼就能刪掉
   if (w.group !== item.group) s += 1.5
   s += Math.abs(w.level - item.level) * 0.7
-  if (item.dir === 'zh2ja') {
+  if (item.dir !== 'ja2zh') {
     s += (1 - kanaSimilarity(item.kana, w.kana)) * 4 // 讀音越像越好
     s -= Math.min(sharedKanji(item, w), 2) * 0.7 // 有共同漢字（顯示漢字時容易混）
   }
   return s
 }
 
+// ---- 漢→假：造「常見的唸錯」選項 ----
+const VOICED = Object.fromEntries(
+  [...'かきくけこさしすせそたちつてとはひふへほ'].map((c, i) => [c, 'がぎぐげござじずぜぞだぢづでどばびぶべぼ'[i]]),
+)
+const UNVOICED = Object.fromEntries(Object.entries(VOICED).map(([a, b]) => [b, a]))
+const O_U_ROW = /[おこそとのほもよろごぞどぼぽょうくすつぬふむゆるぐずづぶぷゅ]/
+
+// 後面接送り仮名（見分ける 的 分＝わ）算訓讀語境；前後是漢字才算熟語
+function segContext(segs, i) {
+  if (segs[i + 1] && !isKanjiSeg(segs[i + 1])) return 'kun'
+  return isKanjiSeg(segs[i - 1]) || isKanjiSeg(segs[i + 1]) ? 'comp' : 'kun'
+}
+
+// 清濁互換（ほんだな↔ほんたな）、長音有無（こうこう↔こうこ）、促音有無（がっこう↔がくこう）
+function soundSlips(s) {
+  const out = new Set()
+  for (let i = 0; i < s.length; i++) {
+    const c = s[i]
+    if (i > 0 && (VOICED[c] || UNVOICED[c])) out.add(s.slice(0, i) + (VOICED[c] || UNVOICED[c]) + s.slice(i + 1))
+    if (c === 'う' && i > 0 && O_U_ROW.test(s[i - 1])) out.add(s.slice(0, i) + s.slice(i + 1))
+    if (O_U_ROW.test(c) && i < s.length - 1 && !/[うっんゃゅょぁぃぅぇぉー]/.test(s[i + 1])) out.add(s.slice(0, i + 1) + 'う' + s.slice(i + 1))
+    if (c === 'っ') {
+      out.add(s.slice(0, i) + s.slice(i + 1))
+      out.add(s.slice(0, i) + 'く' + s.slice(i + 1))
+    }
+  }
+  return out
+}
+
+// 把某一個漢字換成它的其他讀音：一部分 → ひとぶぶん、いちぶふん
+function readingSwaps(item) {
+  const segs = item.furi || []
+  const out = new Set()
+  segs.forEach(([text, rt], i) => {
+    if (!rt || text.length !== 1) return
+    for (const alt of KANJI_READINGS[segContext(segs, i)].get(text) || []) {
+      // 促音（しょっ）、詞首的連濁（ぽん）只在特定位置成立，拿來換會變成沒人會唸錯的怪讀音
+      if (alt === rt || alt.endsWith('っ') || (i === 0 && (UNVOICED[alt[0]] || /^[ぱぴぷぺぽ]/.test(alt)))) continue
+      out.add(segs.map(([t, r], j) => (j === i ? alt : r ?? t)).join(''))
+    }
+  })
+  return out
+}
+
+function misreadings(item) {
+  const valid = READINGS_OF_JA.get(item.ja) || new Set([item.kana])
+  const keep = (s) => s !== item.kana && !valid.has(s) && s.length > 1
+  const swaps = shuffle([...readingSwaps(item)].filter(keep))
+  const slips = shuffle([...soundSlips(item.kana)].filter(keep))
+  // 換讀音最能考出「會不會唸」，優先；不夠再用清濁／長音／促音
+  return [...swaps.slice(0, 2), ...slips].slice(0, 2).map((kana) => ({ id: `fake:${kana}`, kana, fake: true }))
+}
+
 // 四選一：其他選項用別的考題的答案
-// 1. 以前選錯過的字優先放進來（最多 2 個） 2. 其餘挑詞性相同、同情境、難度接近（中→日再看讀音相似）
+// 1. 以前選錯過的字優先放進來（最多 2 個） 2. 其餘挑詞性相同、同情境、難度接近（中→日、漢→假再看讀音相似）
+// 漢→假另外放 2 個「常見的唸錯」，只拿別的字的讀音太容易分辨
 export function makeChoices(item, confusedKeys = []) {
   const picked = []
   const ok = (w) => w !== item && !tooClose(item, w) && !picked.some((p) => tooClose(p, w))
+  if (item.dir === 'kanji2kana') {
+    const valid = READINGS_OF_JA.get(item.ja)
+    for (const f of misreadings(item)) if (!picked.some((p) => p.kana === f.kana)) picked.push(f)
+    const okReal = (w) => ok(w) && !valid.has(w.kana) && w.ja !== w.kana && w.kana.length > 1
+    for (const key of confusedKeys) {
+      if (picked.length === 3) break
+      const w = ALL[item.dir].find((x) => baseKey(x) === key)
+      if (w && okReal(w)) picked.push(w)
+    }
+    const scored = []
+    for (const w of ALL[item.dir]) if (w !== item) scored.push([distractorScore(item, w), w])
+    scored.sort((a, b) => a[0] - b[0])
+    for (const [, w] of scored) {
+      if (picked.length === 3) break
+      if (okReal(w)) picked.push(w)
+    }
+    return shuffle([item, ...picked])
+  }
   for (const key of confusedKeys) {
     const w = ALL[item.dir].find((x) => baseKey(x) === key)
     if (w && ok(w)) picked.push(w)

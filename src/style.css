@@ -347,3 +347,23 @@ button { font: inherit; color: inherit; cursor: pointer; }
 .opt .main.jp { line-height: 1.5; }
 .show-seg button { padding: 5px 10px; }
 .opt { padding-left: 20px; padding-right: 20px; }
+
+/* ---- 發音設定 ---- */
+.voice-block { display: flex; flex-direction: column; gap: 10px; }
+.voice-block h3 { margin-bottom: 0; }
+.voice-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; font-size: 13px; color: var(--muted); }
+.voice-row .seg { align-self: auto; }
+.voice-row .seg button { padding: 4px 12px; }
+.voice-row select {
+  flex: 1; min-width: 0; font: inherit; font-size: 13px; color: var(--ink); background: var(--bg);
+  border: 1px solid var(--line); border-radius: 10px; padding: 6px 8px;
+}
+.voice-note { margin: 0; font-size: 12px; color: var(--muted); }
+.voice-warn {
+  margin: 0; font-size: 12px; line-height: 1.6; padding: 8px 10px; border-radius: 10px;
+  background: color-mix(in srgb, var(--bad) 12%, transparent); border: 1px solid color-mix(in srgb, var(--bad) 40%, transparent);
+}
+/* 熟字訓整段標：讀音置中，不要平均攤開讓人誤以為逐字對應 */
+.jp ruby.group { ruby-align: center; }
+.jp ruby.group rt { letter-spacing: 0; }
+.opt small.fake { color: var(--bad); }
