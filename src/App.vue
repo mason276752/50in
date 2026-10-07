@@ -4,6 +4,7 @@ import { GROUPS, SCRIPTS, SIMILAR_SETS, buildPool, buildSimilarPool, similarTo, 
 import { useSpeechRecognition, speak } from './useSpeech'
 import { recognize, matchWritten } from './handwriting'
 import HandwritePad from './HandwritePad.vue'
+import { WORD_CATS, LEVELS, DIRECTIONS, buildWordPool, loadWords, wordById, wordsByCat, makeChoices } from './words'
 
 const LS_SETTINGS = 'kana-quiz:settings'
 const LS_STATS = 'kana-quiz:stats'
@@ -30,8 +31,15 @@ const settings = reactive(
     mode: 'normal', // 'normal' 依分類 | 'similar' 易混淆
     similarOff: [], // 易混淆模式下關掉的組（記關掉的，預設全開）
     answer: 'type', // 'type' 看假名打拼音 | 'write' 看拼音手寫假名
+    subject: 'kana', // 'kana' 假名 | 'vocab' 單字
+    vocabDir: 'ja2zh', // 'ja2zh' 日翻中 | 'zh2ja' 中翻日
+    vocabCats: WORD_CATS.map((c) => c.key),
+    vocabLevels: LEVELS.map((l) => l.key),
   }),
 )
+// 舊版題庫的分類 key 已經不存在
+settings.vocabCats = settings.vocabCats.filter((k) => WORD_CATS.some((c) => c.key === k))
+if (!settings.vocabCats.length) settings.vocabCats = WORD_CATS.map((c) => c.key)
 watch(settings, (v) => save(LS_SETTINGS, v), { deep: true })
 
 function toggleIn(list, key) {
@@ -48,16 +56,30 @@ function toggleSimilar(key) {
   else if (off.length < SIMILAR_SETS.length - 1) off.push(key)
 }
 
-const pool = computed(() =>
-  settings.mode === 'similar' ? buildSimilarPool(settings.similarOff) : buildPool(settings.scripts, settings.groups),
+const vocab = computed(() => settings.subject === 'vocab')
+// 單字資料很大，第一次切到單字模式才載入
+const vocabReady = ref(false)
+watch(
+  vocab,
+  (on) => on && loadWords().then(() => (vocabReady.value = true)),
+  { immediate: true },
 )
+const pool = computed(() => {
+  if (vocab.value) return vocabReady.value ? buildWordPool(settings.vocabDir, settings.vocabCats, settings.vocabLevels) : []
+  return settings.mode === 'similar' ? buildSimilarPool(settings.similarOff) : buildPool(settings.scripts, settings.groups)
+})
 
-const writeMode = computed(() => settings.answer === 'write')
+const writeMode = computed(() => !vocab.value && settings.answer === 'write')
 
 const ALL_KANA = new Map(buildPool(SCRIPTS.map((s) => s.key), GROUPS.map((g) => g.key)).map((x) => [x.id, x]))
+const itemById = (id) => ALL_KANA.get(id) ?? wordById(id)
+// 字卡下方的小字：假名顯示拼音，單字顯示中文
+const caption = (x) => x.caption ?? x.romaji[0]
 
 // ---- 每個假名的累積紀錄（用來加權出題 / 弱點列表）----
 const kanaStats = reactive(load(LS_STATS, {}))
+// 舊版單字題庫（id 只有 'ja2zh:水'）的紀錄對不上新題庫，清掉
+for (const k of Object.keys(kanaStats)) if (/^(ja2zh|zh2ja):[^:]*$/.test(k)) delete kanaStats[k]
 watch(kanaStats, (v) => save(LS_STATS, v), { deep: true })
 // 認字和寫字是不同能力：手寫的紀錄另外存在 'w|' 開頭的 key
 const WRITE_PREFIX = 'w|'
@@ -67,11 +89,19 @@ function sk(id) {
 function statOf(id) {
   return (kanaStats[sk(id)] ||= { hit: 0, miss: 0, pending: 0 })
 }
-// 目前作答方式的紀錄：[[假名 id, 紀錄], …]
+// 目前題型的紀錄：[[題目 id, 紀錄], …]（單字的 id 本身就帶方向，例如 'ja2zh:水'）
 function modeStats() {
-  return Object.entries(kanaStats)
-    .filter(([k]) => k.startsWith(WRITE_PREFIX) === writeMode.value)
-    .map(([k, st]) => [writeMode.value ? k.slice(WRITE_PREFIX.length) : k, st])
+  const out = []
+  vocabReady.value // 單字載入後要重算
+  for (const [k, st] of Object.entries(kanaStats)) {
+    const write = k.startsWith(WRITE_PREFIX)
+    const id = write ? k.slice(WRITE_PREFIX.length) : k
+    const item = itemById(id)
+    if (!item || write !== writeMode.value) continue
+    if (vocab.value ? item.dir !== settings.vocabDir : item.kind === 'vocab') continue
+    out.push([id, st])
+  }
+  return out
 }
 
 // ---- 錯題複習：答錯後要連續答對 REVIEW_STREAK 次才算過關 ----
@@ -87,7 +117,7 @@ function scheduleReview(id, done) {
 const reviewList = computed(() =>
   modeStats()
     .filter(([, st]) => st.pending > 0)
-    .map(([id, st]) => ({ id, done: REVIEW_STREAK - st.pending, item: ALL_KANA.get(id) }))
+    .map(([id, st]) => ({ id, done: REVIEW_STREAK - st.pending, item: itemById(id) }))
     .filter((r) => r.item),
 )
 
@@ -103,10 +133,51 @@ const history = ref([]) // 最近作答 { item, ok }
 
 // ---- 題目 ----
 const current = ref(null)
-const card = reactive({ missed: false, hint: false, startedAt: 0, flash: '', shake: false })
+const card = reactive({ options: [], wrongIds: [], isNew: false, missed: false, hint: false, startedAt: 0, flash: '', shake: false })
 const inputEl = ref(null)
 let recent = []
 let locked = false
+
+// ---- 漸進出題 ----
+// 題庫裡的字分三種：沒出過（新字）/ 學習中 / 已掌握。
+// 學習中的字少於 LEARN_CAP 個才會加入新字（照題庫順序），其餘時間反覆練學習中的字；
+// 已掌握的字偶爾（OLD_RATE）拿出來考，越久沒考、以前錯越多的越容易被抽到。
+const LEARN_CAP = 4
+const OLD_RATE = 0.2
+// 沒錯過的字連對 2 次、錯過的字連對 3 次才算掌握
+function streakOf(st) {
+  return st.streak ?? (st.pending > 0 ? 0 : st.hit) // 舊版紀錄沒有 streak，用答對次數估
+}
+function isMastered(st) {
+  return st.pending === 0 && streakOf(st) >= (st.miss ? 3 : 2)
+}
+const progress = computed(() => {
+  const out = { fresh: [], learning: [], mastered: [] }
+  for (const x of pool.value) {
+    const st = kanaStats[sk(x.id)]
+    out[!st ? 'fresh' : isMastered(st) ? 'mastered' : 'learning'].push(x)
+  }
+  return out
+})
+
+function weightedPick(list, weightOf) {
+  const weights = list.map(weightOf)
+  let r = Math.random() * weights.reduce((a, b) => a + b, 0)
+  for (let i = 0; i < list.length; i++) {
+    r -= weights[i]
+    if (r <= 0) return list[i]
+  }
+  return list[list.length - 1]
+}
+const learnWeight = (x) => {
+  const st = kanaStats[sk(x.id)]
+  return (1 + st.miss) / (1 + streakOf(st)) // 錯越多、連對越少的越常出
+}
+const oldWeight = (x) => {
+  const st = kanaStats[sk(x.id)]
+  const days = (Date.now() - (st.seen ?? 0)) / 864e5
+  return Math.min(days, 30) + 0.2 + st.miss / (st.hit + st.miss || 1)
+}
 
 function pickNext() {
   const p = pool.value
@@ -122,32 +193,33 @@ function pickNext() {
     .sort((a, b) => (reviewDue.get(sk(a.id)) ?? 0) - (reviewDue.get(sk(b.id)) ?? 0))
   if (due.length) return showCard(due[0])
 
-  let candidates = p.filter((x) => !recent.includes(x.id))
-  if (!candidates.length) candidates = p
+  const { fresh, learning, mastered } = progress.value
+  const notRecent = (list) => list.filter((x) => !recent.slice(-2).includes(x.id))
+  const oldOnes = notRecent(mastered)
 
-  // 易混淆模式：一半機率接著出跟上一題長得像的字，逼自己分辨
-  if (settings.mode === 'similar' && current.value && Math.random() < 0.5) {
-    const ids = new Set(p.map((x) => x.id))
-    const lookalikes = similarTo(current.value.id).filter((x) => ids.has(x.id) && !recent.slice(-2).includes(x.id))
-    if (lookalikes.length) candidates = lookalikes
+  // 時不時考一下已經會的字
+  if (oldOnes.length && (Math.random() < OLD_RATE || (!learning.length && !fresh.length))) {
+    return showCard(weightedPick(oldOnes, oldWeight))
   }
 
-  // 錯越多、對越少的越常出現
-  const weights = candidates.map((x) => {
-    const s = kanaStats[sk(x.id)] || { hit: 0, miss: 0 }
-    return (1 + s.miss * 2) / (1 + s.hit * 0.25)
-  })
-  let r = Math.random() * weights.reduce((a, b) => a + b, 0)
-  let next = candidates[candidates.length - 1]
-  for (let i = 0; i < candidates.length; i++) {
-    r -= weights[i]
-    if (r <= 0) {
-      next = candidates[i]
-      break
-    }
+  // 學習中的字夠少（都快會了）才拿新字
+  if (fresh.length && learning.length < LEARN_CAP) return showCard(fresh[0])
+
+  // 易混淆模式：一半機率接著出跟上一題長得像、而且已經學過的字，逼自己分辨
+  if (!vocab.value && settings.mode === 'similar' && current.value && Math.random() < 0.5) {
+    const ids = new Set([...learning, ...mastered].map((x) => x.id))
+    const lookalikes = notRecent(similarTo(current.value.id).filter((x) => ids.has(x.id)))
+    if (lookalikes.length) return showCard(weightedPick(lookalikes, learnWeight))
   }
 
-  showCard(next)
+  const practice = notRecent(learning)
+  if (practice.length) return showCard(weightedPick(practice, learnWeight))
+
+  // 學習中的字剛出過：拿新字或舊字頂上，都沒有才重複
+  if (fresh.length) return showCard(fresh[0])
+  if (oldOnes.length) return showCard(weightedPick(oldOnes, oldWeight))
+  const any = p.filter((x) => x.id !== current.value?.id)
+  showCard(any.length ? any[Math.floor(Math.random() * any.length)] : p[0])
 }
 
 function showCard(next) {
@@ -156,11 +228,19 @@ function showCard(next) {
   while (recent.length > Math.min(4, p.length - 1)) recent.shift()
 
   current.value = next
-  Object.assign(card, { missed: false, hint: false, startedAt: performance.now(), flash: '', shake: false })
+  Object.assign(card, {
+    options: vocab.value ? makeChoices(next) : [],
+    wrongIds: [],
+    isNew: !kanaStats[sk(next.id)], missed: false, hint: false, startedAt: performance.now(), flash: '', shake: false })
   clearInput()
   resetPad()
   locked = false
-  if (settings.autoSpeak) playSound()
+  if (settings.autoSpeak && !answerIsSpoken()) playSound()
+}
+
+// 中翻日的題目，發音就是答案：自動播放改成答完才播
+function answerIsSpoken() {
+  return current.value?.dir === 'zh2ja'
 }
 
 function markWrong() {
@@ -170,7 +250,7 @@ function markWrong() {
     session.streak = 0
     statOf(current.value.id).miss++
   }
-  statOf(current.value.id).pending = REVIEW_STREAK
+  Object.assign(statOf(current.value.id), { pending: REVIEW_STREAK, streak: 0, seen: Date.now() })
   scheduleReview(current.value.id, 0)
   card.hint = true
   navigator.vibrate?.(60)
@@ -189,6 +269,8 @@ function markCorrect() {
     session.totalMs += performance.now() - card.startedAt
     const st = statOf(item.id)
     st.hit++
+    st.streak = streakOf(st) + 1
+    st.seen = Date.now()
     if (st.pending > 0) {
       st.pending--
       if (st.pending > 0) scheduleReview(item.id, REVIEW_STREAK - st.pending)
@@ -198,7 +280,8 @@ function markCorrect() {
   history.value.unshift({ item, ok: !card.missed, key: performance.now() })
   history.value.length = Math.min(history.value.length, 24)
   card.flash = 'ok'
-  setTimeout(pickNext, 220)
+  if (settings.autoSpeak && answerIsSpoken()) playSound()
+  setTimeout(pickNext, vocab.value ? 650 : 220) // 選擇題多留一下，看清楚各選項的意思
 }
 
 function skip() {
@@ -211,6 +294,27 @@ function skip() {
   history.value.unshift({ item: current.value, ok: false, key: performance.now() })
   history.value.length = Math.min(history.value.length, 24)
   pickNext()
+}
+
+// ---- 單字四選一 ----
+// 選錯後要再點一次正確答案才換題（跟打字一樣）
+function choose(opt) {
+  if (!current.value || locked) return
+  if (opt.id === current.value.id) return markCorrect()
+  if (!card.wrongIds.includes(opt.id)) card.wrongIds.push(opt.id)
+  markWrong()
+}
+// 字越多字越小，長單字也塞得進卡片
+function wordSize(text) {
+  return { fontSize: `${Math.min(30, 84 / Math.max(Array.from(text).length, 1))}cqw` }
+}
+function optionClass(opt) {
+  const isAnswer = opt.id === current.value?.id
+  return {
+    good: isAnswer && (locked || card.hint),
+    bad: card.wrongIds.includes(opt.id),
+    dim: (locked || card.hint) && !isAnswer && !card.wrongIds.includes(opt.id),
+  }
 }
 
 // ---- 打字 ----
@@ -298,7 +402,7 @@ function logSpeech(alts, ok) {
 const mic = useSpeechRecognition((alts, isFinal) => {
   // 播放發音時麥克風會收到喇叭聲：直接丟掉
   if (performance.now() < ignoreSpeechUntil) return true
-  if (!current.value || locked) return false
+  if (!current.value || locked || vocab.value || writeMode.value) return false
   if (alts.some((a) => matchSpeech(a, current.value))) {
     speechMiss.value = ''
     chineseWarn.value = false
@@ -320,20 +424,30 @@ function playSound() {
   if (!current.value) return
   // 播放時暫停比對，避免麥克風收到喇叭聲音自動答對
   ignoreSpeechUntil = Infinity
-  speak(current.value.hira, () => (ignoreSpeechUntil = performance.now() + 500))
+  speak(current.value.say ?? current.value.hira, () => (ignoreSpeechUntil = performance.now() + 500))
 }
 
 // ---- 鍵盤 ----
-// 手寫模式沒有輸入框，鍵盤快捷鍵掛在 window 上
+// 手寫、單字模式沒有輸入框，鍵盤快捷鍵掛在 window 上
 function onWindowKeydown(e) {
-  if (!writeMode.value || e.isComposing || /^(INPUT|TEXTAREA)$/.test(e.target.tagName)) return
+  if (e.isComposing || /^(INPUT|TEXTAREA)$/.test(e.target.tagName) || e.metaKey || e.altKey) return
+  if (vocab.value) {
+    const n = Number(e.key)
+    if (n >= 1 && n <= card.options.length) choose(card.options[n - 1])
+    else if (e.key === 'Enter') {
+      e.preventDefault()
+      skip()
+    } else if (e.key === 'Escape') playSound()
+    return
+  }
+  if (!writeMode.value) return
   if (e.key === 'Enter') {
     e.preventDefault()
     checkWriting(true)
   } else if (e.key === 'Escape') {
     e.preventDefault()
     playSound()
-  } else if (e.key === 'Backspace' || (e.key === 'z' && (e.metaKey || e.ctrlKey))) {
+  } else if (e.key === 'Backspace' || (e.key === 'z' && e.ctrlKey)) {
     e.preventDefault()
     undoStroke()
   } else if (e.key === 'Delete') {
@@ -358,7 +472,7 @@ const weakList = computed(() =>
     .map(([id, s]) => ({ id, ...s, rate: s.miss / (s.hit + s.miss) }))
     .sort((a, b) => b.rate - a.rate || b.miss - a.miss)
     .slice(0, 12)
-    .map((w) => ({ ...w, item: ALL_KANA.get(w.id) }))
+    .map((w) => ({ ...w, item: itemById(w.id) }))
     .filter((w) => w.item),
 )
 
@@ -374,11 +488,21 @@ const currentReview = computed(() => {
   const st = current.value && kanaStats[sk(current.value.id)]
   return st?.pending > 0 ? REVIEW_STREAK - st.pending : null
 })
-const lookalikes = computed(() => (current.value ? similarTo(current.value.id) : []))
+const lookalikes = computed(() => (current.value && !vocab.value ? similarTo(current.value.id) : []))
 
 const setsOpen = ref(false)
 const showChart = ref(false)
 const chartSections = computed(() => {
+  if (vocab.value) {
+    return [
+      {
+        key: 'vocab',
+        // 單字太多，只列學過的
+        title: '學過的單字',
+        groups: wordsByCat(pool.value.filter((w) => kanaStats[w.id])).map((g) => ({ ...g, words: true })),
+      },
+    ]
+  }
   if (settings.mode === 'similar') {
     return [
       {
@@ -406,6 +530,11 @@ const chartSections = computed(() => {
 })
 
 watch(
+  () => settings.subject,
+  () => vocab.value && mic.stop(),
+)
+
+watch(
   () => settings.answer,
   () => {
     if (writeMode.value) mic.stop() // 手寫時不要讓語音順便答題
@@ -423,7 +552,7 @@ watch(pool, (p) => {
 // 觸控裝置：不主動叫出鍵盤（用語音作答時很干擾），使用者點輸入框才打字
 const isTouch = window.matchMedia('(pointer: coarse)').matches
 function focusInput() {
-  if (isTouch || writeMode.value || mic.listening.value) return
+  if (isTouch || writeMode.value || vocab.value || mic.listening.value) return
   nextTick(() => inputEl.value?.focus())
 }
 
@@ -463,84 +592,131 @@ onBeforeUnmount(() => {
   <div class="app" @click.self="focusInput">
     <header class="top">
       <h1>五十音<span>測驗</span></h1>
+      <div class="seg subject-seg">
+        <button :class="{ on: !vocab }" @click="settings.subject = 'kana'">假名</button>
+        <button :class="{ on: vocab }" @click="settings.subject = 'vocab'">單字</button>
+      </div>
       <button class="settings-btn" :class="{ on: settingsOpen }" @click="settingsOpen = !settingsOpen">
         {{ settingsOpen ? '完成' : `題庫 ${pool.length} ▾` }}
       </button>
       <div class="filters" :class="{ open: settingsOpen }">
-        <div class="seg">
-          <button :class="{ on: settings.mode === 'normal' }" @click="settings.mode = 'normal'">依分類</button>
-          <button :class="{ on: settings.mode === 'similar' }" @click="settings.mode = 'similar'">易混淆</button>
+        <div v-if="vocab" class="chips">
+          <button
+            v-for="l in LEVELS"
+            :key="l.key"
+            class="chip"
+            :class="{ on: settings.vocabLevels.includes(l.key) }"
+            @click="toggleIn(settings.vocabLevels, l.key)"
+          >
+            {{ l.label }}
+          </button>
         </div>
-        <template v-if="settings.mode === 'normal'">
-          <div class="chips">
-            <button
-              v-for="sc in SCRIPTS"
-              :key="sc.key"
-              class="chip"
-              :class="{ on: settings.scripts.includes(sc.key) }"
-              @click="toggleIn(settings.scripts, sc.key)"
-            >
-              {{ sc.label }}
-            </button>
+        <div v-if="vocab" class="chips">
+          <button
+            v-for="c in WORD_CATS"
+            :key="c.key"
+            class="chip"
+            :class="{ on: settings.vocabCats.includes(c.key) }"
+            @click="toggleIn(settings.vocabCats, c.key)"
+          >
+            {{ c.label }}
+          </button>
+        </div>
+        <template v-else>
+          <div class="seg">
+            <button :class="{ on: settings.mode === 'normal' }" @click="settings.mode = 'normal'">依分類</button>
+            <button :class="{ on: settings.mode === 'similar' }" @click="settings.mode = 'similar'">易混淆</button>
           </div>
-          <div class="chips">
+          <template v-if="settings.mode === 'normal'">
+            <div class="chips">
+              <button
+                v-for="sc in SCRIPTS"
+                :key="sc.key"
+                class="chip"
+                :class="{ on: settings.scripts.includes(sc.key) }"
+                @click="toggleIn(settings.scripts, sc.key)"
+              >
+                {{ sc.label }}
+              </button>
+            </div>
+            <div class="chips">
+              <button
+                v-for="g in GROUPS"
+                :key="g.key"
+                class="chip"
+                :class="{ on: settings.groups.includes(g.key) }"
+                @click="toggleIn(settings.groups, g.key)"
+              >
+                {{ g.label }}
+              </button>
+            </div>
+          </template>
+          <button v-else class="chip sets-toggle" @click="setsOpen = !setsOpen">
+            組合 {{ SIMILAR_SETS.length - settings.similarOff.length }}/{{ SIMILAR_SETS.length }} {{ setsOpen ? '▴' : '▾' }}
+          </button>
+          <div v-if="settings.mode === 'similar' && setsOpen" class="chips similar-chips">
             <button
-              v-for="g in GROUPS"
-              :key="g.key"
+              v-for="set in SIMILAR_SETS"
+              :key="set.key"
               class="chip"
-              :class="{ on: settings.groups.includes(g.key) }"
-              @click="toggleIn(settings.groups, g.key)"
+              :class="{ on: !settings.similarOff.includes(set.key) }"
+              lang="ja"
+              @click="toggleSimilar(set.key)"
             >
-              {{ g.label }}
+              {{ set.label }}
             </button>
           </div>
         </template>
-        <button v-else class="chip sets-toggle" @click="setsOpen = !setsOpen">
-          組合 {{ SIMILAR_SETS.length - settings.similarOff.length }}/{{ SIMILAR_SETS.length }} {{ setsOpen ? '▴' : '▾' }}
-        </button>
-        <div v-if="settings.mode === 'similar' && setsOpen" class="chips similar-chips">
-          <button
-            v-for="set in SIMILAR_SETS"
-            :key="set.key"
-            class="chip"
-            :class="{ on: !settings.similarOff.includes(set.key) }"
-            lang="ja"
-            @click="toggleSimilar(set.key)"
-          >
-            {{ set.label }}
-          </button>
-        </div>
       </div>
     </header>
 
     <main class="stage">
       <section class="quiz" @click="focusInput">
         <div class="quiz-top">
-          <div class="seg answer-seg">
+          <div v-if="vocab" class="seg answer-seg">
+            <button v-for="d in DIRECTIONS" :key="d.key" :class="{ on: settings.vocabDir === d.key }" @click.stop="settings.vocabDir = d.key">
+              {{ d.label }}
+            </button>
+          </div>
+          <div v-else class="seg answer-seg">
             <button :class="{ on: !writeMode }" @click.stop="settings.answer = 'type'">看字答拼音</button>
             <button :class="{ on: writeMode }" @click.stop="settings.answer = 'write'">看拼音手寫</button>
           </div>
-          <div class="pool-count">題庫 {{ pool.length }} 個</div>
+          <div class="pool-count">
+            題庫 {{ pool.length }} · 已掌握 {{ progress.mastered.length }} · 學習中 {{ progress.learning.length }}
+          </div>
         </div>
         <div class="mini-stats">
           <span class="good">✓ {{ session.correct }}</span>
           <span class="bad">✗ {{ session.wrong }}</span>
           <span>{{ accuracy }}%</span>
           <span>連續 {{ session.streak }}</span>
+          <span>掌握 {{ progress.mastered.length }}/{{ pool.length }}</span>
           <span v-if="reviewList.length" class="rv">複習 {{ reviewList.length }}</span>
         </div>
 
+        <div v-if="vocab && !vocabReady" class="speech-line">載入單字中…</div>
         <div
           v-if="current"
           ref="cardEl"
           class="card"
-          :class="{ ok: card.flash === 'ok', shake: card.shake, kata: current.script === 'kata', prompt: writeMode }"
+          :class="{ ok: card.flash === 'ok', shake: card.shake, kata: current.script === 'kata', prompt: writeMode || vocab }"
         >
-          <span class="script-tag">{{ current.script === 'kata' ? '片' : '平' }}</span>
+          <span class="script-tag">{{ vocab ? `${LEVELS[current.level - 1].label} · ${current.dir === 'ja2zh' ? '日→中' : '中→日'}` : current.script === 'kata' ? '片' : '平' }}</span>
           <span v-if="currentReview !== null" class="review-tag" :title="`複習中：再連續答對 ${REVIEW_STREAK - currentReview} 次`">
             複習 <i v-for="n in REVIEW_STREAK" :key="n" :class="{ done: n <= currentReview }" />
           </span>
-          <template v-if="writeMode">
+          <span v-else-if="card.isNew" class="review-tag">{{ vocab ? '新單字' : '新字' }}</span>
+          <template v-if="vocab">
+            <!-- 主要顯示讀音：很多漢字詞中日同形（水、山…），直接給漢字等於送分 -->
+            <template v-if="current.dir === 'ja2zh'">
+              <div class="word" lang="ja" :style="wordSize(current.kana)">{{ current.kana }}</div>
+              <!-- 同音詞只看讀音分不出來，直接附上漢字 -->
+              <div class="word-reading" lang="ja">{{ (locked || card.hint || current.homophone) && current.kana !== current.ja ? current.ja : '' }}</div>
+            </template>
+            <div v-else class="word" :style="wordSize(current.zh)">{{ current.zh }}</div>
+          </template>
+          <template v-else-if="writeMode">
             <div class="romaji">{{ current.romaji[0] }}</div>
             <div class="script-name">寫出{{ current.script === 'kata' ? '片假名' : '平假名' }}</div>
           </template>
@@ -554,7 +730,31 @@ onBeforeUnmount(() => {
           <span v-for="x in lookalikes" :key="x.id" class="la" lang="ja">{{ x.display }}<small>{{ x.romaji[0] }}</small></span>
         </div>
 
-        <template v-if="writeMode">
+        <template v-if="vocab">
+          <div class="options">
+            <button v-for="(opt, i) in card.options" :key="opt.id" class="opt" :class="optionClass(opt)" @click.stop="choose(opt)">
+              <span class="num">{{ i + 1 }}</span>
+              <template v-if="current.dir === 'ja2zh'">
+                <span class="main">{{ opt.zh }}</span>
+                <small v-if="locked || card.hint" lang="ja">{{ opt.kana }}{{ opt.kana !== opt.ja ? `（${opt.ja}）` : '' }}</small>
+              </template>
+              <template v-else>
+                <span class="main" lang="ja">{{ opt.kana }}</span>
+                <small v-if="locked || card.hint" class="zh">{{ opt.kana !== opt.ja ? `${opt.ja}・` : '' }}{{ opt.zh }}</small>
+              </template>
+            </button>
+          </div>
+          <div class="actions vocab">
+            <button class="btn" title="Esc" @click.stop="playSound">🔊<span class="label"> 發音</span></button>
+            <button class="btn" title="Enter" @click.stop="skip">{{ card.hint ? '下一題' : '看答案' }}</button>
+          </div>
+          <div class="speech-line">
+            <template v-if="card.hint">點正確答案（綠色）繼續</template>
+            <template v-else-if="!isTouch">1–4：選答案　Enter：看答案 / 下一題　Esc：聽發音</template>
+          </div>
+        </template>
+
+        <template v-else-if="writeMode">
           <HandwritePad
             ref="padEl"
             :class="{ bad: card.shake }"
@@ -647,11 +847,25 @@ onBeforeUnmount(() => {
           <div><b>{{ avgSec }}</b><small>平均秒數</small></div>
         </div>
 
+        <div class="block">
+          <h3>進度 · 會了才加新字</h3>
+          <div class="progress">
+            <i class="m" :style="{ flex: progress.mastered.length }" />
+            <i class="l" :style="{ flex: progress.learning.length }" />
+            <i class="f" :style="{ flex: progress.fresh.length }" />
+          </div>
+          <div class="progress-legend">
+            <span><i class="m" />已掌握 {{ progress.mastered.length }}</span>
+            <span><i class="l" />學習中 {{ progress.learning.length }}</span>
+            <span><i class="f" />未學 {{ progress.fresh.length }}</span>
+          </div>
+        </div>
+
         <div v-if="history.length" class="block">
           <h3>最近</h3>
           <TransitionGroup tag="div" name="pop" class="history">
-            <span v-for="h in history" :key="h.key" class="h" :class="h.ok ? 'good' : 'bad'" :title="h.item.romaji[0]">
-              {{ h.item.display }}<small>{{ h.item.romaji[0] }}</small>
+            <span v-for="h in history" :key="h.key" class="h" :class="h.ok ? 'good' : 'bad'" :title="caption(h.item)">
+              {{ h.item.display }}<small>{{ caption(h.item) }}</small>
             </span>
           </TransitionGroup>
         </div>
@@ -669,7 +883,7 @@ onBeforeUnmount(() => {
           <h3>弱點</h3>
           <div class="weak">
             <span v-for="w in weakList" :key="w.id" class="w">
-              {{ w.item.display }}<small>{{ w.item.romaji[0] }} · 錯 {{ w.miss }}</small>
+              {{ w.item.display }}<small>{{ caption(w.item) }} · 錯 {{ w.miss }}</small>
             </span>
           </div>
         </div>
@@ -682,12 +896,16 @@ onBeforeUnmount(() => {
     </main>
 
     <section v-if="showChart" class="chart">
+      <p v-if="vocab" class="credit">
+        詞表來源：<a href="http://www.tanos.co.uk/jlpt/" target="_blank" rel="noopener">tanos.co.uk JLPT 詞彙表</a>（CC BY），中文釋義與分類另行整理
+      </p>
+      <p v-if="vocab && !chartSections[0].groups.length" class="credit">還沒有學過的單字</p>
       <div v-for="sec in chartSections" :key="sec.key">
         <h3>{{ sec.title }}</h3>
         <div v-for="g in sec.groups" :key="g.key" class="chart-group">
           <h4 v-if="g.label">{{ g.label }}</h4>
-          <div class="grid" :class="{ wide: g.wide, similar: !g.label }">
-            <span v-for="x in g.items" :key="x.id">{{ x.display }}<small>{{ x.romaji[0] }}</small></span>
+          <div class="grid" :class="{ wide: g.wide, similar: !g.label, words: g.words }">
+            <span v-for="x in g.items" :key="x.id" lang="ja">{{ x.display }}<small>{{ caption(x) }}</small></span>
           </div>
         </div>
       </div>
