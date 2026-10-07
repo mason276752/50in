@@ -243,8 +243,12 @@ function showCard(next) {
   clearInput()
   resetPad()
   locked = false
-  if (settings.autoSpeak && !answerIsSpoken()) playSound()
+  // 換題後先停一下再唸，給眼睛時間看新題目，不要畫面一換就馬上出聲
+  clearTimeout(autoSpeakTimer)
+  if (settings.autoSpeak && !answerIsSpoken()) autoSpeakTimer = setTimeout(() => !locked && playSound(), AUTO_SPEAK_DELAY)
 }
+const AUTO_SPEAK_DELAY = 700
+let autoSpeakTimer = 0
 
 const KANA_FONTS = 4 // style.css 的 .kana-font-0 … 3
 const kanaFont = computed(() => `kana-font-${card.font}`)
@@ -499,6 +503,7 @@ function toggleAutoSpeak() {
 }
 
 function playSound() {
+  clearTimeout(autoSpeakTimer) // 自己按了發音，就不用再自動唸一次
   if (!current.value) return
   // 播放時暫停比對，避免麥克風收到喇叭聲音自動答對
   ignoreSpeechUntil = Infinity
