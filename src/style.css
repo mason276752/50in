@@ -368,5 +368,12 @@ button { font: inherit; color: inherit; cursor: pointer; }
 .jp ruby.group rt { letter-spacing: 0; }
 .opt small.fake { color: var(--bad); }
 
-/* 手寫體（教科書風格）：き、さ、り、ふ 的筆畫分開，跟印刷體隨機輪流 */
-.hand [lang="ja"] { font-family: 'Klee One', 'Hiragino Sans', 'Noto Sans JP', 'PingFang TC', 'Noto Sans TC', system-ui, sans-serif; }
+/* 題目的假名字型：風格都是黑體，只差寫法，每題隨機用一種
+   0 Noto Sans JP         き さ 相連、り 相連、け は 有勾
+   1 BIZ UDPGothic        き さ 分開、り 分開、け は 直的
+   2 M PLUS 2             き さ 分開、り 相連、け は 直的
+   3 Zen Kaku Gothic New  き さ 相連、り 分開、け は 有勾 */
+.kana-font-0 [lang="ja"] { font-family: 'Noto Sans JP', sans-serif; }
+.kana-font-1 [lang="ja"] { font-family: 'BIZ UDPGothic', 'Noto Sans JP', sans-serif; }
+.kana-font-2 [lang="ja"] { font-family: 'M PLUS 2', 'Noto Sans JP', sans-serif; }
+.kana-font-3 [lang="ja"] { font-family: 'Zen Kaku Gothic New', 'Noto Sans JP', sans-serif; }

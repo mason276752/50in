@@ -32,7 +32,6 @@ const settings = reactive(
     groups: ['seion', 'dakuon', 'handakuon', 'youon', 'youon_daku'],
     autoSpeak: false,
     sfx: true, // 答對 / 答錯音效
-    speechRate: 0.7, // 發音速度（1 = 正常）
     voiceURI: '', // 選用的日文語音，空字串 = 自動挑
     mode: 'normal', // 'normal' 依分類 | 'similar' 易混淆
     similarOff: [], // 易混淆模式下關掉的組（記關掉的，預設全開）
@@ -140,7 +139,7 @@ const history = ref([]) // 最近作答 { item, ok }
 
 // ---- 題目 ----
 const current = ref(null)
-const card = reactive({ options: [], wrongIds: [], isNew: false, missed: false, hint: false, startedAt: 0, flash: '', shake: false, hand: false })
+const card = reactive({ options: [], wrongIds: [], isNew: false, missed: false, hint: false, startedAt: 0, flash: '', shake: false, font: 0 })
 const inputEl = ref(null)
 let recent = []
 let locked = false
@@ -239,13 +238,16 @@ function showCard(next) {
     options: vocab.value ? makeChoices(next, confusedWith(next)) : [],
     wrongIds: [],
     isNew: !kanaStats[sk(next.id)], missed: false, hint: false, startedAt: performance.now(), flash: '', shake: false,
-    // き、さ、り、ふ…印刷體筆畫相連、手寫體分開，每題隨機換一種，兩種都要認得
-    hand: Math.random() < 0.5 })
+    // 同樣是黑體，き、さ、り 有連筆／分開、け、は 有勾／直的，每題隨機換一種，各種寫法都要認得
+    font: Math.floor(Math.random() * KANA_FONTS) })
   clearInput()
   resetPad()
   locked = false
   if (settings.autoSpeak && !answerIsSpoken()) playSound()
 }
+
+const KANA_FONTS = 4 // style.css 的 .kana-font-0 … 3
+const kanaFont = computed(() => `kana-font-${card.font}`)
 
 // 中翻日的題目，發音就是答案：自動播放改成答完才播
 // 中→日、漢→假的發音就是答案：自動播放改成答完才唸
@@ -474,11 +476,6 @@ watch(current, () => (speechMiss.value = ''))
 const showLog = ref(false)
 
 // ---- 發音設定 ----
-const SPEECH_RATES = [
-  { value: 0.5, label: '很慢' },
-  { value: 0.7, label: '慢' },
-  { value: 0.9, label: '正常' },
-]
 const jaVoices = useJapaneseVoices()
 const noJaVoice = computed(() => jaVoices.supported && jaVoices.loaded.value && !jaVoices.voices.value.length)
 // 依作業系統給安裝日文語音的步驟
@@ -490,10 +487,6 @@ const installHint = (() => {
   if (/Windows/.test(ua)) return 'Windows：設定 → 時間與語言 → 語音 → 新增語音 → 日本語，安裝後重新開啟瀏覽器。'
   return '請在作業系統的「文字轉語音」設定裡安裝日文語音，或改用 Chrome。'
 })()
-function setRate(v) {
-  settings.speechRate = v
-  playSound() // 直接唸一次讓你聽差別
-}
 function setVoice(uri) {
   settings.voiceURI = uri
   playSound()
@@ -510,7 +503,6 @@ function playSound() {
   // 播放時暫停比對，避免麥克風收到喇叭聲音自動答對
   ignoreSpeechUntil = Infinity
   speak(current.value.say ?? current.value.hira, () => (ignoreSpeechUntil = performance.now() + 500), {
-    rate: settings.speechRate,
     voiceURI: settings.voiceURI,
   })
 }
@@ -670,8 +662,8 @@ onMounted(() => {
   focusInput()
   window.speechSynthesis?.getVoices() // 預先載入語音
   preloadSfx()
-  // 先抓手寫體的假名，第一次輪到時才不會閃一下系統字型
-  document.fonts?.load('1em "Klee One"', 'あア').catch(() => {})
+  // 先抓兩種字型的假名，第一次輪到時才不會閃一下系統字型
+  for (const f of ['Noto Sans JP', 'BIZ UDPGothic', 'M PLUS 2', 'Zen Kaku Gothic New']) document.fonts?.load(`1em "${f}"`, 'あア').catch(() => {})
 })
 onBeforeUnmount(() => {
   mic.stop()
@@ -818,7 +810,7 @@ onBeforeUnmount(() => {
           v-if="current"
           ref="cardEl"
           class="card"
-          :class="{ ok: card.flash === 'ok', shake: card.shake, kata: current.script === 'kata', prompt: writeMode || vocab, hand: card.hand }"
+          :class="[{ ok: card.flash === 'ok', shake: card.shake, kata: current.script === 'kata', prompt: writeMode || vocab }, kanaFont]"
         >
           <span class="script-tag">{{ vocab ? `${LEVELS[current.level - 1].label} · ${DIRECTIONS.find((d) => d.key === current.dir).label}` : current.script === 'kata' ? '片' : '平' }}</span>
           <span v-if="currentReview !== null" class="review-tag" :title="`複習中：再連續答對 ${REVIEW_STREAK - currentReview} 次`">
@@ -846,13 +838,13 @@ onBeforeUnmount(() => {
             <div class="hint" :class="{ show: card.hint }">{{ current.romaji.join(' / ') }}</div>
           </template>
         </div>
-        <div v-if="current && card.hint && lookalikes.length" class="lookalikes" :class="{ hand: card.hand }">
+        <div v-if="current && card.hint && lookalikes.length" class="lookalikes" :class="kanaFont">
           <span class="label">別搞混</span>
           <span v-for="x in lookalikes" :key="x.id" class="la" lang="ja">{{ x.display }}<small>{{ x.romaji[0] }}</small></span>
         </div>
 
         <template v-if="vocab">
-          <div class="options" :class="{ hand: card.hand }">
+          <div class="options" :class="kanaFont">
             <button v-for="(opt, i) in card.options" :key="opt.id" class="opt" :class="optionClass(opt)" @click.stop="choose(opt)">
               <span class="num">{{ i + 1 }}</span>
               <template v-if="current.dir === 'ja2zh'">
@@ -883,7 +875,7 @@ onBeforeUnmount(() => {
         <template v-else-if="writeMode">
           <HandwritePad
             ref="padEl"
-            :class="{ bad: card.shake, hand: card.hand }"
+            :class="[{ bad: card.shake }, kanaFont]"
             :guide="card.hint && current ? current.display : ''"
             @pen-down="cancelRecognize"
             @stroke="onStroke"
@@ -966,14 +958,6 @@ onBeforeUnmount(() => {
             <p class="voice-warn">這個瀏覽器不支援語音發音，請改用 Chrome、Edge 或 Safari。</p>
           </template>
           <template v-else>
-            <div class="voice-row">
-              <span>速度</span>
-              <div class="seg">
-                <button v-for="r in SPEECH_RATES" :key="r.value" :class="{ on: settings.speechRate === r.value }" @click="setRate(r.value)">
-                  {{ r.label }}
-                </button>
-              </div>
-            </div>
             <div v-if="jaVoices.voices.value.length > 1" class="voice-row">
               <span>聲音</span>
               <select :value="settings.voiceURI" @change="setVoice($event.target.value)">

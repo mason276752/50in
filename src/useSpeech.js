@@ -111,11 +111,12 @@ export function useJapaneseVoices() {
 }
 
 // voiceURI 沒指定或找不到時，用第一個（品質較好的）日文語音
-export function speak(text, onEnd, { rate = 0.8, voiceURI = '' } = {}) {
+// 語速固定 0.5：有理會 rate 的語音（Kyoko、Google）會唸慢一點，其他語音照原速
+export function speak(text, onEnd, { voiceURI = '' } = {}) {
   if (!synth) return
   const u = new SpeechSynthesisUtterance(text)
   u.lang = 'ja-JP'
-  u.rate = rate
+  u.rate = 0.5
   const ja = synth.getVoices().filter((v) => v.lang.replace('_', '-').toLowerCase().startsWith('ja'))
   const voice = ja.find((v) => v.voiceURI === voiceURI) || ja.find((v) => PREFERRED.test(v.name)) || ja[0]
   if (voice) u.voice = voice
