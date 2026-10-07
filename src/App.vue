@@ -140,7 +140,7 @@ const history = ref([]) // 最近作答 { item, ok }
 
 // ---- 題目 ----
 const current = ref(null)
-const card = reactive({ options: [], wrongIds: [], isNew: false, missed: false, hint: false, startedAt: 0, flash: '', shake: false })
+const card = reactive({ options: [], wrongIds: [], isNew: false, missed: false, hint: false, startedAt: 0, flash: '', shake: false, hand: false })
 const inputEl = ref(null)
 let recent = []
 let locked = false
@@ -238,7 +238,9 @@ function showCard(next) {
   Object.assign(card, {
     options: vocab.value ? makeChoices(next, confusedWith(next)) : [],
     wrongIds: [],
-    isNew: !kanaStats[sk(next.id)], missed: false, hint: false, startedAt: performance.now(), flash: '', shake: false })
+    isNew: !kanaStats[sk(next.id)], missed: false, hint: false, startedAt: performance.now(), flash: '', shake: false,
+    // き、さ、り、ふ…印刷體筆畫相連、手寫體分開，每題隨機換一種，兩種都要認得
+    hand: Math.random() < 0.5 })
   clearInput()
   resetPad()
   locked = false
@@ -668,6 +670,8 @@ onMounted(() => {
   focusInput()
   window.speechSynthesis?.getVoices() // 預先載入語音
   preloadSfx()
+  // 先抓手寫體的假名，第一次輪到時才不會閃一下系統字型
+  document.fonts?.load('1em "Klee One"', 'あア').catch(() => {})
 })
 onBeforeUnmount(() => {
   mic.stop()
@@ -814,7 +818,7 @@ onBeforeUnmount(() => {
           v-if="current"
           ref="cardEl"
           class="card"
-          :class="{ ok: card.flash === 'ok', shake: card.shake, kata: current.script === 'kata', prompt: writeMode || vocab }"
+          :class="{ ok: card.flash === 'ok', shake: card.shake, kata: current.script === 'kata', prompt: writeMode || vocab, hand: card.hand }"
         >
           <span class="script-tag">{{ vocab ? `${LEVELS[current.level - 1].label} · ${DIRECTIONS.find((d) => d.key === current.dir).label}` : current.script === 'kata' ? '片' : '平' }}</span>
           <span v-if="currentReview !== null" class="review-tag" :title="`複習中：再連續答對 ${REVIEW_STREAK - currentReview} 次`">
@@ -842,13 +846,13 @@ onBeforeUnmount(() => {
             <div class="hint" :class="{ show: card.hint }">{{ current.romaji.join(' / ') }}</div>
           </template>
         </div>
-        <div v-if="current && card.hint && lookalikes.length" class="lookalikes">
+        <div v-if="current && card.hint && lookalikes.length" class="lookalikes" :class="{ hand: card.hand }">
           <span class="label">別搞混</span>
           <span v-for="x in lookalikes" :key="x.id" class="la" lang="ja">{{ x.display }}<small>{{ x.romaji[0] }}</small></span>
         </div>
 
         <template v-if="vocab">
-          <div class="options">
+          <div class="options" :class="{ hand: card.hand }">
             <button v-for="(opt, i) in card.options" :key="opt.id" class="opt" :class="optionClass(opt)" @click.stop="choose(opt)">
               <span class="num">{{ i + 1 }}</span>
               <template v-if="current.dir === 'ja2zh'">
@@ -879,7 +883,7 @@ onBeforeUnmount(() => {
         <template v-else-if="writeMode">
           <HandwritePad
             ref="padEl"
-            :class="{ bad: card.shake }"
+            :class="{ bad: card.shake, hand: card.hand }"
             :guide="card.hint && current ? current.display : ''"
             @pen-down="cancelRecognize"
             @stroke="onStroke"

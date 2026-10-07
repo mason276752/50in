@@ -367,3 +367,6 @@ button { font: inherit; color: inherit; cursor: pointer; }
 .jp ruby.group { ruby-align: center; }
 .jp ruby.group rt { letter-spacing: 0; }
 .opt small.fake { color: var(--bad); }
+
+/* 手寫體（教科書風格）：き、さ、り、ふ 的筆畫分開，跟印刷體隨機輪流 */
+.hand [lang="ja"] { font-family: 'Klee One', 'Hiragino Sans', 'Noto Sans JP', 'PingFang TC', 'Noto Sans TC', system-ui, sans-serif; }
