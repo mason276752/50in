@@ -6,7 +6,7 @@ import { recognize, matchWritten } from './handwriting'
 import HandwritePad from './HandwritePad.vue'
 import JpWord from './JpWord.vue'
 import { playSfx, preloadSfx } from './sfx'
-import { WORD_CATS, LEVELS, DIRECTIONS, buildWordPool, loadWords, wordById, wordsByCat, makeChoices, plainZh, baseKey } from './words'
+import { WORD_CATS, LEVELS, DIRECTIONS, PHRASE_CATS, PHRASE_LEVELS, DECKS, buildWordPool, loadDeck, wordById, wordsByCat, makeChoices, plainZh, baseKey } from './words'
 
 const LS_SETTINGS = 'kana-quiz:settings'
 const LS_STATS = 'kana-quiz:stats'
@@ -36,16 +36,26 @@ const settings = reactive(
     mode: 'normal', // 'normal' 依分類 | 'similar' 易混淆
     similarOff: [], // 易混淆模式下關掉的組（記關掉的，預設全開）
     answer: 'type', // 'type' 看假名打拼音 | 'write' 看拼音手寫假名
-    subject: 'kana', // 'kana' 假名 | 'vocab' 單字
+    subject: 'kana', // 'kana' 假名 | 'vocab' 單字 | 'phrase' 短句
     vocabDir: 'ja2zh', // 'ja2zh' 日翻中 | 'zh2ja' 中翻日
     vocabCats: WORD_CATS.map((c) => c.key),
     vocabLevels: LEVELS.map((l) => l.key),
+    phraseDir: 'ja2zh',
+    phraseCats: PHRASE_CATS.map((c) => c.key),
+    phraseLevels: PHRASE_LEVELS.map((l) => l.key),
     vocabShow: 'kana', // 日文怎麼顯示：'kana' 假名 | 'kanji' 漢字 | 'both' 漢字上標假名
   }),
 )
 // 舊版題庫的分類 key 已經不存在
 settings.vocabCats = settings.vocabCats.filter((k) => WORD_CATS.some((c) => c.key === k))
 if (!settings.vocabCats.length) settings.vocabCats = WORD_CATS.map((c) => c.key)
+// 短句題庫之後新增的分類：使用者沒看過的一律先勾上
+settings.phraseCatsSeen ||= [...'aitqympsfdhcelw'] // 第一版短句題庫的 15 類
+for (const { key } of PHRASE_CATS) {
+  if (settings.phraseCatsSeen.includes(key)) continue
+  settings.phraseCatsSeen.push(key)
+  if (!settings.phraseCats.includes(key)) settings.phraseCats.push(key)
+}
 watch(settings, (v) => save(LS_SETTINGS, v), { deep: true })
 
 function toggleIn(list, key) {
@@ -55,6 +65,10 @@ function toggleIn(list, key) {
   } else list.push(key)
 }
 
+function setDir(key) {
+  deckDir.value = key
+}
+
 function toggleSimilar(key) {
   const off = settings.similarOff
   const i = off.indexOf(key)
@@ -62,16 +76,28 @@ function toggleSimilar(key) {
   else if (off.length < SIMILAR_SETS.length - 1) off.push(key)
 }
 
-const vocab = computed(() => settings.subject === 'vocab')
-// 單字資料很大，第一次切到單字模式才載入
-const vocabReady = ref(false)
+// 單字、短句都是四選一（共用 vocab 這套流程），差在題庫和各自的設定
+const vocab = computed(() => settings.subject === 'vocab' || settings.subject === 'phrase')
+const deck = computed(() => (settings.subject === 'phrase' ? 'phrase' : 'vocab'))
+const deckInfo = computed(() => DECKS[deck.value])
+const deckSetting = (vocabKey, phraseKey) =>
+  computed({
+    get: () => settings[deck.value === 'phrase' ? phraseKey : vocabKey],
+    set: (v) => (settings[deck.value === 'phrase' ? phraseKey : vocabKey] = v),
+  })
+const deckDir = deckSetting('vocabDir', 'phraseDir')
+const deckCats = deckSetting('vocabCats', 'phraseCats')
+const deckLevels = deckSetting('vocabLevels', 'phraseLevels')
+// 題庫資料很大，第一次切到該模式才載入
+const loaded = reactive({ vocab: false, phrase: false })
+const vocabReady = computed(() => loaded[deck.value])
 watch(
-  vocab,
-  (on) => on && loadWords().then(() => (vocabReady.value = true)),
+  [vocab, deck],
+  ([on, d]) => on && loadDeck(d).then(() => (loaded[d] = true)),
   { immediate: true },
 )
 const pool = computed(() => {
-  if (vocab.value) return vocabReady.value ? buildWordPool(settings.vocabDir, settings.vocabCats, settings.vocabLevels) : []
+  if (vocab.value) return vocabReady.value ? buildWordPool(deck.value, deckDir.value, deckCats.value, deckLevels.value) : []
   return settings.mode === 'similar' ? buildSimilarPool(settings.similarOff) : buildPool(settings.scripts, settings.groups)
 })
 
@@ -104,7 +130,7 @@ function modeStats() {
     const id = write ? k.slice(WRITE_PREFIX.length) : k
     const item = itemById(id)
     if (!item || write !== writeMode.value) continue
-    if (vocab.value ? item.dir !== settings.vocabDir : item.kind === 'vocab') continue
+    if (vocab.value ? item.deck !== deck.value || item.dir !== deckDir.value : item.kind === 'vocab') continue
     out.push([id, st])
   }
   return out
@@ -364,8 +390,11 @@ function jpSub(w, revealed) {
 const jpMain = (w) => (settings.vocabShow === 'kana' ? w.kana : w.ja)
 
 // 字越多字越小，長單字也塞得進卡片
+// 單字排一行；短句太長就分成最多三行，每行字數平均
 function wordSize(text) {
-  return { fontSize: `${Math.min(30, 84 / Math.max(Array.from(text).length, 1))}cqw` }
+  const len = Math.max(Array.from(text).length, 1)
+  const perLine = Math.ceil(len / Math.min(3, Math.ceil(len / 9)))
+  return { fontSize: `${Math.min(30, 84 / perLine)}cqw` }
 }
 function optionClass(opt) {
   const isAnswer = opt.id === current.value?.id
@@ -585,8 +614,8 @@ const chartSections = computed(() => {
       {
         key: 'vocab',
         // 單字太多，只列學過的
-        title: '學過的單字',
-        groups: wordsByCat(pool.value.filter((w) => kanaStats[w.id])).map((g) => ({ ...g, words: true })),
+        title: deck.value === 'phrase' ? '學過的短句' : '學過的單字',
+        groups: wordsByCat(pool.value.filter((w) => kanaStats[w.id]), deck.value).map((g) => ({ ...g, words: true })),
       },
     ]
   }
@@ -684,7 +713,8 @@ onBeforeUnmount(() => {
       <h1>五十音<span>測驗</span></h1>
       <div class="seg subject-seg">
         <button :class="{ on: !vocab }" @click="settings.subject = 'kana'">假名</button>
-        <button :class="{ on: vocab }" @click="settings.subject = 'vocab'">單字</button>
+        <button :class="{ on: settings.subject === 'vocab' }" @click="settings.subject = 'vocab'">單字</button>
+        <button :class="{ on: settings.subject === 'phrase' }" @click="settings.subject = 'phrase'">短句</button>
       </div>
       <button class="settings-btn" :class="{ on: settingsOpen }" @click="settingsOpen = !settingsOpen">
         {{ settingsOpen ? '完成' : `題庫 ${pool.length} ▾` }}
@@ -692,22 +722,22 @@ onBeforeUnmount(() => {
       <div class="filters" :class="{ open: settingsOpen }">
         <div v-if="vocab" class="chips">
           <button
-            v-for="l in LEVELS"
+            v-for="l in deckInfo.levels"
             :key="l.key"
             class="chip"
-            :class="{ on: settings.vocabLevels.includes(l.key) }"
-            @click="toggleIn(settings.vocabLevels, l.key)"
+            :class="{ on: deckLevels.includes(l.key) }"
+            @click="toggleIn(deckLevels, l.key)"
           >
             {{ l.label }}
           </button>
         </div>
         <div v-if="vocab" class="chips">
           <button
-            v-for="c in WORD_CATS"
+            v-for="c in deckInfo.cats"
             :key="c.key"
             class="chip"
-            :class="{ on: settings.vocabCats.includes(c.key) }"
-            @click="toggleIn(settings.vocabCats, c.key)"
+            :class="{ on: deckCats.includes(c.key) }"
+            @click="toggleIn(deckCats, c.key)"
           >
             {{ c.label }}
           </button>
@@ -764,11 +794,11 @@ onBeforeUnmount(() => {
       <section class="quiz" @click="focusInput">
         <div class="quiz-top">
           <div v-if="vocab" class="seg answer-seg">
-            <button v-for="d in DIRECTIONS" :key="d.key" :class="{ on: settings.vocabDir === d.key }" @click.stop="settings.vocabDir = d.key">
+            <button v-for="d in deckInfo.dirs" :key="d.key" :class="{ on: deckDir === d.key }" @click.stop="setDir(d.key)">
               {{ d.label }}
             </button>
           </div>
-          <div v-if="vocab && settings.vocabDir !== 'kanji2kana'" class="seg show-seg" title="日文的顯示方式">
+          <div v-if="vocab && deckDir !== 'kanji2kana'" class="seg show-seg" title="日文的顯示方式">
             <button v-for="m in SHOW_MODES" :key="m.key" :class="{ on: settings.vocabShow === m.key }" @click.stop="settings.vocabShow = m.key">
               {{ m.label }}
             </button>
@@ -817,14 +847,14 @@ onBeforeUnmount(() => {
           class="card"
           :class="[{ ok: card.flash === 'ok', shake: card.shake, kata: current.script === 'kata', prompt: writeMode || vocab }, kanaFont]"
         >
-          <span class="script-tag">{{ vocab ? `${LEVELS[current.level - 1].label} · ${DIRECTIONS.find((d) => d.key === current.dir).label}` : current.script === 'kata' ? '片' : '平' }}</span>
+          <span class="script-tag">{{ vocab ? `${DECKS[current.deck].levels[current.level - 1].label} · ${DIRECTIONS.find((d) => d.key === current.dir).label}` : current.script === 'kata' ? '片' : '平' }}</span>
           <span v-if="currentReview !== null" class="review-tag" :title="`複習中：再連續答對 ${REVIEW_STREAK - currentReview} 次`">
             複習 <i v-for="n in REVIEW_STREAK" :key="n" :class="{ done: n <= currentReview }" />
           </span>
-          <span v-else-if="card.isNew" class="review-tag">{{ vocab ? '新單字' : '新字' }}</span>
+          <span v-else-if="card.isNew" class="review-tag">{{ vocab ? (current.deck === 'phrase' ? '新短句' : '新單字') : '新字' }}</span>
           <template v-if="vocab">
             <template v-if="current.dir === 'ja2zh'">
-              <JpWord class="word" :class="{ ruby: settings.vocabShow === 'both' }" :word="current" :mode="settings.vocabShow" :style="wordSize(jpMain(current))" />
+              <JpWord class="word" :class="{ ruby: settings.vocabShow === 'both', long: current.deck === 'phrase' }" :word="current" :mode="settings.vocabShow" :style="wordSize(jpMain(current))" />
               <div class="word-reading" lang="ja">{{ jpSub(current, locked || card.hint) }}</div>
             </template>
             <!-- 漢→假：只給漢字，答完補上中文意思 -->
@@ -832,7 +862,7 @@ onBeforeUnmount(() => {
               <JpWord class="word" :word="current" mode="kanji" :style="wordSize(current.ja)" />
               <div class="word-reading">{{ locked || card.hint ? current.zh : '' }}</div>
             </template>
-            <div v-else class="word" :style="wordSize(current.zh)">{{ current.zh }}</div>
+            <div v-else class="word" :class="{ long: current.deck === 'phrase' }" :style="wordSize(current.zh)">{{ current.zh }}</div>
           </template>
           <template v-else-if="writeMode">
             <div class="romaji">{{ current.romaji[0] }}</div>
@@ -1036,10 +1066,10 @@ onBeforeUnmount(() => {
     </main>
 
     <section v-if="showChart" class="chart">
-      <p v-if="vocab" class="credit">
+      <p v-if="deck === 'vocab' && vocab" class="credit">
         詞表來源：<a href="http://www.tanos.co.uk/jlpt/" target="_blank" rel="noopener">tanos.co.uk JLPT 詞彙表</a>（CC BY），振假名依 <a href="https://www.edrdg.org/wiki/index.php/KANJIDIC_Project" target="_blank" rel="noopener">KANJIDIC</a>（EDRDG，CC BY-SA）切分，中文釋義與分類另行整理
       </p>
-      <p v-if="vocab && !chartSections[0].groups.length" class="credit">還沒有學過的單字</p>
+      <p v-if="vocab && !chartSections[0].groups.length" class="credit">{{ deck === 'phrase' ? '還沒有學過的短句' : '還沒有學過的單字' }}</p>
       <div v-for="sec in chartSections" :key="sec.key">
         <h3>{{ sec.title }}</h3>
         <div v-for="g in sec.groups" :key="g.key" class="chart-group">

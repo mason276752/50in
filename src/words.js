@@ -4,6 +4,7 @@
 // 假名段不標；熟字訓（明日=あした）整段標
 // 詞性：v 動詞 | i い形容詞 | k 副詞・連接詞・文法 | g 招呼・慣用語 | n 名詞及其他（含な形容詞）
 // 檔案約 180KB(gzip)，切到單字模式才載入
+// 短句題庫 data/phrases.tsv 格式相同（自編，約 2000 句，26 種情境），難度分 入門／基礎／進階，詞性一律 g
 
 export const WORD_CATS = [
   { key: 'g', label: '招呼・慣用語' },
@@ -41,16 +42,57 @@ export const DIRECTIONS = [
   { key: 'kanji2kana', label: '漢→假' }, // 看漢字選讀音
 ]
 
-let ALL = null // { ja2zh: [...], zh2ja: [...], kanji2kana: [...] }
+export const PHRASE_CATS = [
+  { key: 'a', label: '招呼・寒暄' },
+  { key: 'i', label: '自我介紹' },
+  { key: 't', label: '感謝・道歉' },
+  { key: 'q', label: '回應・附和' },
+  { key: 'k', label: '請求・許可' },
+  { key: 'o', label: '意見・討論' },
+  { key: 'r', label: '稱讚・安慰' },
+  { key: 'm', label: '心情・感嘆' },
+  { key: 'y', label: '日常對話' },
+  { key: 'z', label: '天氣・季節' },
+  { key: 'p', label: '邀約・約定' },
+  { key: 'g', label: '朋友・戀愛' },
+  { key: 'j', label: '興趣・娛樂' },
+  { key: 's', label: '購物' },
+  { key: 'f', label: '餐廳・飲食' },
+  { key: 'v', label: '店員用語' },
+  { key: 'd', label: '問路・交通' },
+  { key: 'h', label: '住宿・觀光' },
+  { key: 'u', label: '租屋・居家' },
+  { key: 'n', label: '銀行・郵局・手續' },
+  { key: 'x', label: '手機・網路' },
+  { key: 'c', label: '課堂・學習' },
+  { key: 'w', label: '職場・敬語' },
+  { key: 'l', label: '電話' },
+  { key: 'b', label: '醫院・藥局' },
+  { key: 'e', label: '緊急狀況' },
+]
+
+export const PHRASE_LEVELS = [
+  { key: 1, label: '入門' },
+  { key: 2, label: '基礎' },
+  { key: 3, label: '進階' },
+]
+
+// 兩副選擇題題庫：單字、短句（短句沒有「漢→假」）
+export const DECKS = {
+  vocab: { cats: WORD_CATS, levels: LEVELS, dirs: DIRECTIONS, load: () => import('./data/vocab.tsv?raw') },
+  phrase: { cats: PHRASE_CATS, levels: PHRASE_LEVELS, dirs: DIRECTIONS.slice(0, 2), load: () => import('./data/phrases.tsv?raw') },
+}
+
+const ALL = {} // { vocab: { ja2zh: [...], … }, phrase: { ja2zh: [...], zh2ja: [...] } }
 const BY_ID = new Map()
 // 單一漢字 → 題庫裡出現過的讀音，分兩種語境（用來造「唸錯」的選項）：
 // comp：熟語裡，前後也是漢字（学校 的 学＝がっ）；kun：後面接假名或單獨成詞（学ぶ 的 学＝まな）
 const KANJI_READINGS = { comp: new Map(), kun: new Map() }
 const isKanjiSeg = (seg) => seg && seg[1] != null
 const READINGS_OF_JA = new Map() // 寫法 → 所有正確讀音（明日：あした、あす）
-let loading = null
+const loading = {}
 
-function parse(raw) {
+function parse(raw, deck) {
   const rows = raw
     .split('\n')
     .filter(Boolean)
@@ -71,7 +113,8 @@ function parse(raw) {
   const sameKana = new Map()
   for (const r of rows) sameKana.set(r.kana, (sameKana.get(r.kana) || 0) + 1)
 
-  for (const r of rows) {
+  // 漢→假的讀音資料只取自單字
+  for (const r of deck === 'vocab' ? rows : []) {
     if (!READINGS_OF_JA.has(r.ja)) READINGS_OF_JA.set(r.ja, new Set())
     READINGS_OF_JA.get(r.ja).add(r.kana)
     const segs = r.furi || []
@@ -83,13 +126,15 @@ function parse(raw) {
     })
   }
 
-  ALL = {}
-  for (const { key: dir } of DIRECTIONS) {
-    ALL[dir] = rows.map((r) => {
+  ALL[deck] = {}
+  for (const { key: dir } of DECKS[deck].dirs) {
+    ALL[deck][dir] = rows.map((r) => {
       const item = {
         ...r,
-        id: `${dir}:${r.ja}:${r.kana}`,
+        // 單字沿用舊 id，學習紀錄才接得上
+        id: deck === 'vocab' ? `${dir}:${r.ja}:${r.kana}` : `ph:${dir}:${r.ja}`,
         kind: 'vocab',
+        deck,
         dir,
         display: r.kana,
         caption: r.zh,
@@ -102,9 +147,9 @@ function parse(raw) {
   }
 }
 
-export function loadWords() {
-  loading ||= import('./data/vocab.tsv?raw').then((m) => parse(m.default))
-  return loading
+export function loadDeck(deck) {
+  loading[deck] ||= DECKS[deck].load().then((m) => parse(m.default, deck))
+  return loading[deck]
 }
 
 export function wordById(id) {
@@ -112,14 +157,15 @@ export function wordById(id) {
 }
 
 // 由簡入難：依難度分批，同難度內各情境輪流出，不會一直出同一類
-export function buildWordPool(dir, cats, levels) {
-  if (!ALL) return []
+export function buildWordPool(deck, dir, cats, levels) {
+  const items = ALL[deck]?.[dir]
+  if (!items) return []
   const out = []
-  for (const { key: level } of LEVELS) {
+  for (const { key: level } of DECKS[deck].levels) {
     if (!levels.includes(level)) continue
     // 漢→假只考有漢字的詞
-    const lists = WORD_CATS.filter((c) => cats.includes(c.key)).map((c) =>
-      ALL[dir].filter((w) => w.group === c.key && w.level === level && (dir !== 'kanji2kana' || w.ja !== w.kana)),
+    const lists = DECKS[deck].cats.filter((c) => cats.includes(c.key)).map((c) =>
+      items.filter((w) => w.group === c.key && w.level === level && (dir !== 'kanji2kana' || w.ja !== w.kana)),
     )
     for (let i = 0; lists.some((l) => i < l.length); i++) {
       for (const l of lists) if (l[i]) out.push(l[i])
@@ -128,8 +174,8 @@ export function buildWordPool(dir, cats, levels) {
   return out
 }
 
-export function wordsByCat(items) {
-  return WORD_CATS.map((c) => ({ key: c.key, label: c.label, items: items.filter((w) => w.group === c.key) })).filter(
+export function wordsByCat(items, deck) {
+  return DECKS[deck].cats.map((c) => ({ key: c.key, label: c.label, items: items.filter((w) => w.group === c.key) })).filter(
     (g) => g.items.length,
   )
 }
@@ -154,12 +200,21 @@ export function plainZh(zh) {
 // 不分出題方向的單字 key，用來記「哪兩個字容易搞混」
 export const baseKey = (w) => `${w.ja}:${w.kana}`
 
+// 短句比意思用：去掉註記、標點、語助詞和人稱（「多少錢？」→「多少錢」）
+const coreZh = (zh) => zh.replace(/（[^）]*）/g, '').replace(/[？！，、。…；～ 喔呢吧了嗎啊囉耶我你您請的]/g, '')
+
 // 意思太接近的不能同時當選項（例如 美しい / 綺麗 都是「漂亮」）
+// 英文關鍵字欄在短句裡是同義組代號（ありがとう／ありがとうございます 同一組）
 function tooClose(a, b) {
   if (a.fake || b.fake) return a.kana === b.kana
   if (a.ja === b.ja || a.kana === b.kana) return true
   const ma = meanings(a.zh)
   if (meanings(b.zh).some((x) => ma.includes(x))) return true
+  if (a.deck === 'phrase') {
+    // 「多少錢？」和「全部多少錢？」放在一起，兩個都像對的
+    const [x, y] = [coreZh(a.zh), coreZh(b.zh)].sort((p, q) => p.length - q.length)
+    if (x === y || (x.length >= 3 && y.includes(x))) return true
+  }
   return a.en.some((w) => b.en.includes(w))
 }
 
@@ -260,11 +315,11 @@ export function makeChoices(item, confusedKeys = []) {
     const okReal = (w) => ok(w) && !valid.has(w.kana) && w.ja !== w.kana && w.kana.length > 1
     for (const key of confusedKeys) {
       if (picked.length === 3) break
-      const w = ALL[item.dir].find((x) => baseKey(x) === key)
+      const w = ALL[item.deck][item.dir].find((x) => baseKey(x) === key)
       if (w && okReal(w)) picked.push(w)
     }
     const scored = []
-    for (const w of ALL[item.dir]) if (w !== item) scored.push([distractorScore(item, w), w])
+    for (const w of ALL[item.deck][item.dir]) if (w !== item) scored.push([distractorScore(item, w), w])
     scored.sort((a, b) => a[0] - b[0])
     for (const [, w] of scored) {
       if (picked.length === 3) break
@@ -273,12 +328,12 @@ export function makeChoices(item, confusedKeys = []) {
     return shuffle([item, ...picked])
   }
   for (const key of confusedKeys) {
-    const w = ALL[item.dir].find((x) => baseKey(x) === key)
+    const w = ALL[item.deck][item.dir].find((x) => baseKey(x) === key)
     if (w && ok(w)) picked.push(w)
     if (picked.length === 2) break
   }
   const scored = []
-  for (const w of ALL[item.dir]) if (w !== item) scored.push([distractorScore(item, w), w])
+  for (const w of ALL[item.deck][item.dir]) if (w !== item) scored.push([distractorScore(item, w), w])
   scored.sort((a, b) => a[0] - b[0])
   for (const [, w] of scored) {
     if (picked.length === 3) break
