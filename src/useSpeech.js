@@ -113,15 +113,29 @@ export function useJapaneseVoices() {
 // voiceURI 沒指定或找不到時，用第一個（品質較好的）日文語音
 // 語速固定 0.5：有理會 rate 的語音（Kyoko、Google）會唸慢一點，其他語音照原速
 export function speak(text, onEnd, { voiceURI = '' } = {}) {
-  if (!synth) return
+  if (!synth) return onEnd?.()
   const u = new SpeechSynthesisUtterance(text)
   u.lang = 'ja-JP'
   u.rate = 0.5
   const ja = synth.getVoices().filter((v) => v.lang.replace('_', '-').toLowerCase().startsWith('ja'))
   const voice = ja.find((v) => v.voiceURI === voiceURI) || ja.find((v) => PREFERRED.test(v.name)) || ja[0]
   if (voice) u.voice = voice
-  u.onend = onEnd
-  u.onerror = onEnd
+  // onEnd 收到結束原因：'end' 唸完；'interrupted'／'canceled' 被新的發音或換題打斷
+  u.onend = () => onEnd?.('end')
+  u.onerror = (e) => onEnd?.(e.error || 'error')
   synth.cancel()
   synth.speak(u)
+}
+
+// 在點擊事件裡同步唸一段無聲的空白：iOS／Chrome 從此允許程式自己發音
+export function unlockSpeech() {
+  if (!synth) return
+  const u = new SpeechSynthesisUtterance(' ')
+  u.volume = 0
+  synth.speak(u)
+}
+
+// 換題時停掉還沒唸完的發音，不要讓上一題的聲音蓋到新題目
+export function stopSpeaking() {
+  synth?.cancel()
 }

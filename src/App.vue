@@ -1,10 +1,11 @@
 <script setup>
 import { ref, reactive, computed, watch, nextTick, onMounted, onBeforeUnmount } from 'vue'
 import { GROUPS, SCRIPTS, SIMILAR_SETS, buildPool, buildSimilarPool, similarTo, matchTyped, matchSpeech, looksChinese } from './kana'
-import { useSpeechRecognition, useJapaneseVoices, speak } from './useSpeech'
+import { useSpeechRecognition, useJapaneseVoices, speak, stopSpeaking, unlockSpeech } from './useSpeech'
 import { recognize, matchWritten } from './handwriting'
 import HandwritePad from './HandwritePad.vue'
 import JpWord from './JpWord.vue'
+import { jpChunks, fitSize } from './jpBreak'
 import { playSfx, preloadSfx } from './sfx'
 import { WORD_CATS, LEVELS, DIRECTIONS, PHRASE_CATS, PHRASE_LEVELS, DECKS, buildWordPool, loadDeck, wordById, wordsByCat, makeChoices, plainZh, baseKey } from './words'
 
@@ -269,12 +270,16 @@ function showCard(next) {
   clearInput()
   resetPad()
   locked = false
-  // 換題後先停一下再唸，給眼睛時間看新題目，不要畫面一換就馬上出聲
+  // 換題後先停一下再唸，給眼睛時間看新題目，不要畫面一換就馬上出聲；上一題沒唸完的先停掉
   clearTimeout(autoSpeakTimer)
+  afterSpoken = null
+  stopSpeaking()
   if (settings.autoSpeak && !answerIsSpoken()) autoSpeakTimer = setTimeout(() => !locked && playSound(), AUTO_SPEAK_DELAY)
 }
 const AUTO_SPEAK_DELAY = 700
 let autoSpeakTimer = 0
+let afterSpoken = null
+let blockedSpeech = null // 被瀏覽器擋下（還沒點過頁面）的那題，第一次點擊後補唸 // 答對後「唸完答案才換題」的等待：{ next, arm }
 
 const KANA_FONTS = 4 // style.css 的 .kana-font-0 … 3
 const kanaFont = computed(() => `kana-font-${card.font}`)
@@ -293,7 +298,7 @@ function feedback(kind) {
 }
 
 // silent：按「看答案」不算真的答錯，不播錯誤音效
-function markWrong({ silent = false } = {}) {
+function markWrong({ silent = false, reveal = true } = {}) {
   if (!silent) feedback('bad')
   if (!card.missed) {
     card.missed = true
@@ -303,7 +308,7 @@ function markWrong({ silent = false } = {}) {
   }
   Object.assign(statOf(current.value.id), { pending: REVIEW_STREAK, streak: 0, seen: Date.now() })
   scheduleReview(current.value.id, 0)
-  card.hint = true
+  if (reveal) card.hint = true
   navigator.vibrate?.(60)
   card.shake = false
   requestAnimationFrame(() => (card.shake = true))
@@ -332,15 +337,42 @@ function markCorrect() {
   history.value.length = Math.min(history.value.length, 24)
   card.flash = 'ok'
   feedback('ok')
-  // 中→日答完才唸，等音效播完再唸，不要疊在一起
-  if (settings.autoSpeak && answerIsSpoken()) setTimeout(playSound, settings.sfx ? 450 : 0)
-  setTimeout(pickNext, vocab.value ? 650 : 220) // 選擇題多留一下，看清楚各選項的意思
+  // 看答案時已經唸過，就不用再等一次
+  if (settings.autoSpeak && answerIsSpoken() && !card.hint) {
+    // 中→日、漢→假答對才唸：等音效播完再唸，唸完才換題，不然聲音會跟著跑到下一題的畫面
+    // 語音沒有正常結束（沒有日文語音等）就照字數估一個上限，時間到照樣換題
+    let done = false
+    let fallback = 0
+    const next = (reason) => {
+      // 等待中自己又按了發音：原本那次被打斷，不算唸完，等新的那次（或時間上限）
+      if (done || reason === 'interrupted' || reason === 'canceled') return
+      done = true
+      afterSpoken = null
+      clearTimeout(fallback)
+      setTimeout(pickNext, 300)
+    }
+    const arm = () => {
+      clearTimeout(fallback)
+      fallback = setTimeout(next, 2500 + Array.from(item.kana).length * 400)
+    }
+    afterSpoken = { next, arm }
+    arm()
+    setTimeout(() => playSound(next), settings.sfx ? 450 : 0)
+  } else setTimeout(pickNext, nextDelay())
+}
+
+// 答對後多久換題：選錯過的選擇題要看各選項意思、手寫要看清楚寫的字，多停一下
+function nextDelay() {
+  if (vocab.value) return card.missed && !card.hint ? 1800 : 650
+  return writeMode.value ? 800 : 220
 }
 
 function skip() {
   if (!current.value || locked) return
   if (!card.hint) {
     markWrong({ silent: true }) // 第一次按：顯示答案
+    // 中→日、漢→假的答案就是發音：揭曉時一起唸
+    if (settings.autoSpeak && answerIsSpoken()) playSound()
     return
   }
   locked = true
@@ -351,12 +383,14 @@ function skip() {
 
 // ---- 單字四選一 ----
 // 選錯後要再點一次正確答案才換題（跟打字一樣）
+// 選錯不揭曉答案：把選錯的那格標紅（並顯示它本身的意思），讓玩家繼續選到對為止
 function choose(opt) {
   if (!current.value || locked) return
   if (opt.id === current.value.id) return markCorrect()
-  if (!card.wrongIds.includes(opt.id)) card.wrongIds.push(opt.id)
+  if (card.wrongIds.includes(opt.id)) return // 已經選錯過的不重複扣
+  card.wrongIds.push(opt.id)
   if (!opt.fake) recordConfusion(current.value, opt) // 造出來的錯誤讀音不是真的字，不用記
-  markWrong()
+  markWrong({ reveal: false })
 }
 
 // 選錯的組合記下來（兩個方向都算），之後考其中一個時優先把另一個放進選項
@@ -387,7 +421,11 @@ function jpSub(w, revealed) {
   if (settings.vocabShow === 'kanji') return revealed ? w.kana : ''
   return ''
 }
-const jpMain = (w) => (settings.vocabShow === 'kana' ? w.kana : w.ja)
+// 日文題目的字級：短句照文節分成最多三行，單字排一行
+function jpSize(w, mode) {
+  const text = mode === 'kana' ? w.kana : w.ja
+  return { fontSize: `${fitSize(w.deck === 'phrase' ? jpChunks(w, mode) : [text])}cqw` }
+}
 
 // 字越多字越小，長單字也塞得進卡片
 // 單字排一行；短句太長就分成最多三行，每行字數平均
@@ -396,6 +434,10 @@ function wordSize(text) {
   const perLine = Math.ceil(len / Math.min(3, Math.ceil(len / 9)))
   return { fontSize: `${Math.min(30, 84 / perLine)}cqw` }
 }
+// 選項的說明（中文全文、讀音）：答完、看答案，或這格已經選錯過才顯示
+// 一次就答對不展開（只閃 0.65 秒，看不清楚又讓畫面跳動）；選錯過的題目答對後全部展開，多停一下讓人看
+const revealed = () => card.hint || (locked && card.missed)
+const optShown = (opt) => revealed() || card.wrongIds.includes(opt.id)
 function optionClass(opt) {
   const isAnswer = opt.id === current.value?.id
   return {
@@ -531,12 +573,24 @@ function toggleAutoSpeak() {
   if (settings.autoSpeak && !locked && !answerIsSpoken()) playSound()
 }
 
-function playSound() {
+// onEnd：唸完要做的事（按鈕直接綁 playSound 時傳進來的是點擊事件，不是函式）
+function playSound(onEnd) {
+  if (typeof onEnd !== 'function') onEnd = null
+  // 答對後等著唸完換題時又按了發音：這次唸完一樣換題，時間上限重新算
+  if (!onEnd && locked && afterSpoken) {
+    onEnd = afterSpoken.next
+    afterSpoken.arm()
+  }
   clearTimeout(autoSpeakTimer) // 自己按了發音，就不用再自動唸一次
-  if (!current.value) return
+  if (!current.value) return onEnd?.()
   // 播放時暫停比對，避免麥克風收到喇叭聲音自動答對
   ignoreSpeechUntil = Infinity
-  speak(current.value.say ?? current.value.hira, () => (ignoreSpeechUntil = performance.now() + 500), {
+  const id = current.value.id
+  speak(current.value.say ?? current.value.hira, (reason) => {
+    ignoreSpeechUntil = performance.now() + 500
+    if (reason === 'not-allowed') blockedSpeech = id
+    onEnd?.(reason)
+  }, {
     voiceURI: settings.voiceURI,
   })
 }
@@ -688,10 +742,23 @@ watch(
   (on) => on && isTouch && inputEl.value?.blur(),
 )
 
+// 第一次點擊／按鍵後補唸被擋下的題目；這一下若是直接作答（題目已鎖定）就不補
+// iOS 要在點擊當下同步呼叫才算數：先唸一段無聲的解鎖，等點擊處理完（知道是不是作答）再補唸
+function replayBlocked() {
+  if (!blockedSpeech) return
+  unlockSpeech()
+  setTimeout(() => {
+    if (blockedSpeech && blockedSpeech === current.value?.id && !locked) playSound()
+    blockedSpeech = null
+  })
+}
+
 onMounted(() => {
   syncViewport()
   window.visualViewport?.addEventListener('resize', syncViewport)
   window.addEventListener('keydown', onWindowKeydown)
+  window.addEventListener('click', replayBlocked, true) // 捕獲階段：選項按鈕有 .stop
+  window.addEventListener('keydown', replayBlocked, true)
   pickNext()
   focusInput()
   window.speechSynthesis?.getVoices() // 預先載入語音
@@ -703,6 +770,8 @@ onBeforeUnmount(() => {
   mic.stop()
   window.visualViewport?.removeEventListener('resize', syncViewport)
   window.removeEventListener('keydown', onWindowKeydown)
+  window.removeEventListener('click', replayBlocked, true)
+  window.removeEventListener('keydown', replayBlocked, true)
   cancelRecognize()
 })
 </script>
@@ -854,15 +923,15 @@ onBeforeUnmount(() => {
           <span v-else-if="card.isNew" class="review-tag">{{ vocab ? (current.deck === 'phrase' ? '新短句' : '新單字') : '新字' }}</span>
           <template v-if="vocab">
             <template v-if="current.dir === 'ja2zh'">
-              <JpWord class="word" :class="{ ruby: settings.vocabShow === 'both', long: current.deck === 'phrase' }" :word="current" :mode="settings.vocabShow" :style="wordSize(jpMain(current))" />
-              <div class="word-reading" lang="ja">{{ jpSub(current, locked || card.hint) }}</div>
+              <JpWord class="word" :class="{ ruby: settings.vocabShow === 'both', long: current.deck === 'phrase' }" :word="current" :mode="settings.vocabShow" :style="jpSize(current, settings.vocabShow)" />
+              <div class="word-reading"><JpWord v-if="jpSub(current, revealed())" :word="current" :mode="settings.vocabShow === 'kana' ? 'kanji' : 'kana'" /></div>
             </template>
             <!-- 漢→假：只給漢字，答完補上中文意思 -->
             <template v-else-if="current.dir === 'kanji2kana'">
-              <JpWord class="word" :word="current" mode="kanji" :style="wordSize(current.ja)" />
-              <div class="word-reading">{{ locked || card.hint ? current.zh : '' }}</div>
+              <JpWord class="word" :word="current" mode="kanji" :style="jpSize(current, 'kanji')" />
+              <div class="word-reading">{{ revealed() ? current.zh : '' }}</div>
             </template>
-            <div v-else class="word" :class="{ long: current.deck === 'phrase' }" :style="wordSize(current.zh)">{{ current.zh }}</div>
+            <div v-else class="word zh" :class="{ long: current.deck === 'phrase' }" :style="wordSize(current.zh)">{{ current.zh }}</div>
           </template>
           <template v-else-if="writeMode">
             <div class="romaji">{{ current.romaji[0] }}</div>
@@ -883,17 +952,17 @@ onBeforeUnmount(() => {
             <button v-for="(opt, i) in card.options" :key="opt.id" class="opt" :class="optionClass(opt)" @click.stop="choose(opt)">
               <span class="num">{{ i + 1 }}</span>
               <template v-if="current.dir === 'ja2zh'">
-                <span class="main">{{ locked || card.hint ? opt.zh : plainZh(opt.zh) }}</span>
-                <small v-if="locked || card.hint" lang="ja">{{ opt.ja }}{{ opt.kana !== opt.ja ? `（${opt.kana}）` : '' }}</small>
+                <span class="main">{{ optShown(opt) ? opt.zh : plainZh(opt.zh) }}</span>
+                <small v-if="optShown(opt)" class="sub-ruby"><JpWord :word="opt" mode="both" compact /></small>
               </template>
               <template v-else-if="current.dir === 'kanji2kana'">
                 <span class="main" lang="ja">{{ opt.kana }}</span>
-                <small v-if="(locked || card.hint) && opt.fake" class="fake">沒有這個讀法</small>
-                <small v-else-if="locked || card.hint" class="zh">{{ opt.ja }}・{{ plainZh(opt.zh) }}</small>
+                <small v-if="optShown(opt) && opt.fake" class="fake">沒有這個讀法</small>
+                <small v-else-if="optShown(opt)" class="zh">{{ opt.ja }}・{{ plainZh(opt.zh) }}</small>
               </template>
               <template v-else>
                 <JpWord class="main" :word="opt" :mode="settings.vocabShow" />
-                <small v-if="locked || card.hint" class="zh">{{ jpSub(opt, true) ? `${jpSub(opt, true)}・` : '' }}{{ opt.zh }}</small>
+                <small v-if="optShown(opt)" class="zh">{{ jpSub(opt, true) ? `${jpSub(opt, true)}・` : '' }}{{ opt.zh }}</small>
               </template>
             </button>
           </div>
@@ -903,6 +972,7 @@ onBeforeUnmount(() => {
           </div>
           <div class="speech-line">
             <template v-if="card.hint">點正確答案（綠色）繼續</template>
+            <template v-else-if="card.wrongIds.length && card.flash !== 'ok'">不對喔，再選一次</template>
             <template v-else-if="!isTouch">1–4：選答案　Enter：看答案 / 下一題　Esc：聽發音</template>
           </div>
         </template>
