@@ -5,6 +5,8 @@ import { useSpeechRecognition, useJapaneseVoices, speak, stopSpeaking, unlockSpe
 import { recognize, matchWritten } from './handwriting'
 import HandwritePad from './HandwritePad.vue'
 import JpWord from './JpWord.vue'
+import DialogQuiz from './DialogQuiz.vue'
+import { DIALOG_LEVELS, loadDialogs, dialogById, dialogCats, buildDialogPool } from './dialogs'
 import { jpChunks, fitSize } from './jpBreak'
 import { playSfx, preloadSfx } from './sfx'
 import { WORD_CATS, LEVELS, DIRECTIONS, PHRASE_CATS, PHRASE_LEVELS, DECKS, MIX, buildWordPool, loadDeck, wordById, wordsByCat, makeChoices, plainZh, baseKey } from './words'
@@ -37,13 +39,15 @@ const settings = reactive(
     mode: 'normal', // 'normal' 依分類 | 'similar' 易混淆
     similarOff: [], // 易混淆模式下關掉的組（記關掉的，預設全開）
     answer: 'type', // 'type' 看假名打拼音 | 'write' 看拼音手寫假名
-    subject: 'kana', // 'kana' 假名 | 'vocab' 單字 | 'phrase' 短句
+    subject: 'kana', // 'kana' 假名 | 'vocab' 單字 | 'phrase' 短句 | 'dialog' 會話
     vocabDir: 'ja2zh', // 'ja2zh' 日翻中 | 'zh2ja' 中翻日 | 'kanji2kana' 漢→假 | 'mix' 混合
     vocabCats: WORD_CATS.map((c) => c.key),
     vocabLevels: LEVELS.map((l) => l.key),
     phraseDir: 'ja2zh',
     phraseCats: PHRASE_CATS.map((c) => c.key),
     phraseLevels: PHRASE_LEVELS.map((l) => l.key),
+    dialogCats: PHRASE_CATS.map((c) => c.key),
+    dialogLevels: DIALOG_LEVELS.map((l) => l.key),
     vocabShow: 'kana', // 日文怎麼顯示：'kana' 假名 | 'kanji' 漢字 | 'both' 漢字上標假名
   }),
 )
@@ -77,27 +81,38 @@ function toggleSimilar(key) {
   else if (off.length < SIMILAR_SETS.length - 1) off.push(key)
 }
 
-// 單字、短句都是四選一（共用 vocab 這套流程），差在題庫和各自的設定
-const vocab = computed(() => settings.subject === 'vocab' || settings.subject === 'phrase')
-const deck = computed(() => (settings.subject === 'phrase' ? 'phrase' : 'vocab'))
-const deckInfo = computed(() => DECKS[deck.value])
-const deckSetting = (vocabKey, phraseKey) =>
+// 單字、短句、會話都是選擇題（共用 vocab 這套流程：漸進出題、錯題複習），差在題庫和各自的設定
+// 會話的題目卡片、選項換成 DialogQuiz 元件
+const vocab = computed(() => ['vocab', 'phrase', 'dialog'].includes(settings.subject))
+const dialog = computed(() => settings.subject === 'dialog')
+const deck = computed(() => (['phrase', 'dialog'].includes(settings.subject) ? settings.subject : 'vocab'))
+const loaded = reactive({ vocab: false, phrase: false, dialog: false })
+const deckInfo = computed(() =>
+  deck.value === 'dialog' ? { cats: loaded.dialog ? dialogCats() : [], levels: DIALOG_LEVELS, dirs: [] } : DECKS[deck.value],
+)
+// 各題庫自己的設定 key（會話沒有出題方向）
+const DECK_KEYS = {
+  vocab: { dir: 'vocabDir', cats: 'vocabCats', levels: 'vocabLevels' },
+  phrase: { dir: 'phraseDir', cats: 'phraseCats', levels: 'phraseLevels' },
+  dialog: { cats: 'dialogCats', levels: 'dialogLevels' },
+}
+const deckSetting = (kind) =>
   computed({
-    get: () => settings[deck.value === 'phrase' ? phraseKey : vocabKey],
-    set: (v) => (settings[deck.value === 'phrase' ? phraseKey : vocabKey] = v),
+    get: () => settings[DECK_KEYS[deck.value][kind]],
+    set: (v) => (settings[DECK_KEYS[deck.value][kind]] = v),
   })
-const deckDir = deckSetting('vocabDir', 'phraseDir')
-const deckCats = deckSetting('vocabCats', 'phraseCats')
-const deckLevels = deckSetting('vocabLevels', 'phraseLevels')
+const deckDir = deckSetting('dir')
+const deckCats = deckSetting('cats')
+const deckLevels = deckSetting('levels')
 // 題庫資料很大，第一次切到該模式才載入
-const loaded = reactive({ vocab: false, phrase: false })
 const vocabReady = computed(() => loaded[deck.value])
 watch(
   [vocab, deck],
-  ([on, d]) => on && loadDeck(d).then(() => (loaded[d] = true)),
+  ([on, d]) => on && (d === 'dialog' ? loadDialogs() : loadDeck(d)).then(() => (loaded[d] = true)),
   { immediate: true },
 )
 const pool = computed(() => {
+  if (dialog.value) return vocabReady.value ? buildDialogPool(deckCats.value, deckLevels.value) : []
   if (vocab.value) return vocabReady.value ? buildWordPool(deck.value, deckDir.value, deckCats.value, deckLevels.value) : []
   return settings.mode === 'similar' ? buildSimilarPool(settings.similarOff) : buildPool(settings.scripts, settings.groups)
 })
@@ -105,7 +120,7 @@ const pool = computed(() => {
 const writeMode = computed(() => !vocab.value && settings.answer === 'write')
 
 const ALL_KANA = new Map(buildPool(SCRIPTS.map((s) => s.key), GROUPS.map((g) => g.key)).map((x) => [x.id, x]))
-const itemById = (id) => ALL_KANA.get(id) ?? wordById(id)
+const itemById = (id) => ALL_KANA.get(id) ?? wordById(id) ?? dialogById(id)
 // 字卡下方的小字：假名顯示拼音，單字顯示中文
 const caption = (x) => x.caption ?? x.romaji[0]
 
@@ -262,7 +277,7 @@ function showCard(next) {
 
   current.value = next
   Object.assign(card, {
-    options: vocab.value ? makeChoices(next, confusedWith(next)) : [],
+    options: vocab.value && !dialog.value ? makeChoices(next, confusedWith(next)) : [],
     wrongIds: [],
     isNew: !kanaStats[sk(next.id)], missed: false, hint: false, startedAt: performance.now(), flash: '', shake: false,
     // 同樣是黑體，き、さ、り 有連筆／分開、け、は 有勾／直的，每題隨機換一種，各種寫法都要認得
@@ -274,7 +289,7 @@ function showCard(next) {
   clearTimeout(autoSpeakTimer)
   afterSpoken = null
   stopSpeaking()
-  if (settings.autoSpeak && !answerIsSpoken()) autoSpeakTimer = setTimeout(() => !locked && playSound(), AUTO_SPEAK_DELAY)
+  if (settings.autoSpeak && !answerIsSpoken()) autoSpeakTimer = setTimeout(() => !locked && playSound(), dialog.value ? AUTO_SPEAK_DELAY + 500 : AUTO_SPEAK_DELAY)
 }
 const AUTO_SPEAK_DELAY = 700
 let autoSpeakTimer = 0
@@ -314,7 +329,8 @@ function markWrong({ silent = false, reveal = true } = {}) {
   requestAnimationFrame(() => (card.shake = true))
 }
 
-function markCorrect() {
+// advance：答對後自動換題（會話答完要看翻譯，自己按「下一段」）
+function markCorrect({ advance = true } = {}) {
   if (locked) return
   locked = true
   const item = current.value
@@ -337,6 +353,7 @@ function markCorrect() {
   history.value.length = Math.min(history.value.length, 24)
   card.flash = 'ok'
   feedback('ok')
+  if (!advance) return
   // 看答案時已經唸過，就不用再等一次
   if (settings.autoSpeak && answerIsSpoken() && !card.hint) {
     // 中→日、漢→假答對才唸：等音效播完再唸，唸完才換題，不然聲音會跟著跑到下一題的畫面
@@ -368,6 +385,7 @@ function nextDelay() {
 }
 
 function skip() {
+  if (dialog.value) return dialogEl.value?.enter()
   if (!current.value || locked) return
   if (!card.hint) {
     markWrong({ silent: true }) // 第一次按：顯示答案
@@ -379,6 +397,26 @@ function skip() {
   history.value.unshift({ item: current.value, ok: false, key: performance.now() })
   history.value.length = Math.min(history.value.length, 24)
   pickNext()
+}
+
+// ---- 會話 ----
+const dialogEl = ref(null)
+const dialogBadge = computed(() => {
+  if (currentReview.value !== null) return `複習 ${currentReview.value}/${REVIEW_STREAK}`
+  return card.isNew ? '新會話' : ''
+})
+// 選錯：記一次錯（不揭曉答案）；看答案：記錯但不播錯誤音效；某一題答對：播答對音效
+function onDialogWrong() {
+  markWrong({ reveal: false })
+}
+function onDialogGiveup() {
+  markWrong({ silent: true, reveal: false })
+}
+function onDialogRight() {
+  feedback('ok')
+}
+function onDialogDone() {
+  markCorrect({ advance: false })
 }
 
 // ---- 單字四選一 ----
@@ -575,6 +613,7 @@ function toggleAutoSpeak() {
 
 // onEnd：唸完要做的事（按鈕直接綁 playSound 時傳進來的是點擊事件，不是函式）
 function playSound(onEnd) {
+  if (dialog.value) return dialogEl.value?.playAll() // 會話：整段播放（還沒答的句子會跳過）
   if (typeof onEnd !== 'function') onEnd = null
   // 答對後等著唸完換題時又按了發音：這次唸完一樣換題，時間上限重新算
   if (!onEnd && locked && afterSpoken) {
@@ -599,6 +638,15 @@ function playSound(onEnd) {
 // 手寫、單字模式沒有輸入框，鍵盤快捷鍵掛在 window 上
 function onWindowKeydown(e) {
   if (e.isComposing || /^(INPUT|TEXTAREA)$/.test(e.target.tagName) || e.metaKey || e.altKey) return
+  if (dialog.value) {
+    const n = Number(e.key)
+    if (n >= 1 && n <= 4) dialogEl.value?.choose(n - 1)
+    else if (e.key === 'Enter') {
+      e.preventDefault()
+      dialogEl.value?.enter()
+    } else if (e.key === 'Escape') dialogEl.value?.playAll()
+    return
+  }
   if (vocab.value) {
     const n = Number(e.key)
     if (n >= 1 && n <= card.options.length) choose(card.options[n - 1])
@@ -668,7 +716,7 @@ const chartSections = computed(() => {
       {
         key: 'vocab',
         // 單字太多，只列學過的
-        title: deck.value === 'phrase' ? '學過的短句' : '學過的單字',
+        title: { phrase: '學過的短句', dialog: '學過的會話' }[deck.value] || '學過的單字',
         groups: wordsByCat(pool.value.filter((w) => kanaStats[w.id]), deck.value).map((g) => ({ ...g, words: true })),
       },
     ]
@@ -784,6 +832,7 @@ onBeforeUnmount(() => {
         <button :class="{ on: !vocab }" @click="settings.subject = 'kana'">假名</button>
         <button :class="{ on: settings.subject === 'vocab' }" @click="settings.subject = 'vocab'">單字</button>
         <button :class="{ on: settings.subject === 'phrase' }" @click="settings.subject = 'phrase'">短句</button>
+        <button :class="{ on: settings.subject === 'dialog' }" @click="settings.subject = 'dialog'">會話</button>
       </div>
       <button class="settings-btn" :class="{ on: settingsOpen }" @click="settingsOpen = !settingsOpen">
         {{ settingsOpen ? '完成' : `題庫 ${pool.length} ▾` }}
@@ -862,7 +911,7 @@ onBeforeUnmount(() => {
     <main class="stage">
       <section class="quiz" @click="focusInput">
         <div class="quiz-top">
-          <div v-if="vocab" class="seg answer-seg">
+          <div v-if="vocab && !dialog" class="seg answer-seg">
             <button v-for="d in [...deckInfo.dirs, MIX]" :key="d.key" :class="{ on: deckDir === d.key }" @click.stop="setDir(d.key)">
               {{ d.label }}
             </button>
@@ -909,9 +958,24 @@ onBeforeUnmount(() => {
           <span v-if="reviewList.length" class="rv">複習 {{ reviewList.length }}</span>
         </div>
 
-        <div v-if="vocab && !vocabReady" class="speech-line">載入單字中…</div>
+        <div v-if="vocab && !vocabReady" class="speech-line">載入題庫中…</div>
+        <DialogQuiz
+          v-if="dialog && current?.kind === 'dialog'"
+          ref="dialogEl"
+          :key="current.id + ':' + cardNo"
+          :class="[kanaFont, { shake: card.shake }]"
+          :dialog="current"
+          :show="settings.vocabShow"
+          :voice-u-r-i="settings.voiceURI"
+          :badge="dialogBadge"
+          @wrong="onDialogWrong"
+          @giveup="onDialogGiveup"
+          @right="onDialogRight"
+          @done="onDialogDone"
+          @next="pickNext"
+        />
         <div
-          v-if="current"
+          v-if="current && !dialog"
           ref="cardEl"
           class="card"
           :class="[{ ok: card.flash === 'ok', shake: card.shake, kata: current.script === 'kata', prompt: writeMode || vocab }, kanaFont]"
@@ -947,7 +1011,10 @@ onBeforeUnmount(() => {
           <span v-for="x in lookalikes" :key="x.id" class="la" lang="ja">{{ x.display }}<small>{{ x.romaji[0] }}</small></span>
         </div>
 
-        <template v-if="vocab">
+        <template v-if="dialog">
+          <div v-if="!isTouch" class="speech-line">1–4：選答案　Enter：看答案 / 下一段　Esc：整段播放</div>
+        </template>
+        <template v-else-if="vocab">
           <div class="options" :class="kanaFont">
             <button v-for="(opt, i) in card.options" :key="opt.id" class="opt" :class="optionClass(opt)" @click.stop="choose(opt)">
               <span class="num">{{ i + 1 }}</span>
@@ -1139,7 +1206,7 @@ onBeforeUnmount(() => {
       <p v-if="deck === 'vocab' && vocab" class="credit">
         詞表來源：<a href="http://www.tanos.co.uk/jlpt/" target="_blank" rel="noopener">tanos.co.uk JLPT 詞彙表</a>（CC BY），振假名依 <a href="https://www.edrdg.org/wiki/index.php/KANJIDIC_Project" target="_blank" rel="noopener">KANJIDIC</a>（EDRDG，CC BY-SA）切分，中文釋義與分類另行整理
       </p>
-      <p v-if="vocab && !chartSections[0].groups.length" class="credit">{{ deck === 'phrase' ? '還沒有學過的短句' : '還沒有學過的單字' }}</p>
+      <p v-if="vocab && !chartSections[0].groups.length" class="credit">{{ { phrase: '還沒有學過的短句', dialog: '還沒有學過的會話' }[deck] || '還沒有學過的單字' }}</p>
       <div v-for="sec in chartSections" :key="sec.key">
         <h3>{{ sec.title }}</h3>
         <div v-for="g in sec.groups" :key="g.key" class="chart-group">
