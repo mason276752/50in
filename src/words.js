@@ -132,7 +132,7 @@ function parse(raw, deck) {
       const item = {
         ...r,
         // 單字沿用舊 id，學習紀錄才接得上
-        id: deck === 'vocab' ? `${dir}:${r.ja}:${r.kana}` : `ph:${dir}:${r.ja}`,
+        id: idOf(deck, dir, r),
         kind: 'vocab',
         deck,
         dir,
@@ -156,20 +156,48 @@ export function wordById(id) {
   return BY_ID.get(id)
 }
 
+// 「混合」：該題庫的所有方向交錯出題（不是真的方向，題目本身還是 ja2zh／zh2ja／kanji2kana）
+export const MIX = { key: 'mix', label: '混合' }
+// 每個詞第一次出現的方向輪流換（第 1 個詞考日→中、第 2 個考中→日…），一開始就是混的；
+// 同一個詞的其他方向往後錯開幾個詞再出，免得剛考完 日→中 馬上考同一個詞的 中→日（等於送答案）
+const MIX_GAP = 8
+
+const idOf = (deck, dir, w) => (deck === 'vocab' ? `${dir}:${w.ja}:${w.kana}` : `ph:${dir}:${w.ja}`)
+
 // 由簡入難：依難度分批，同難度內各情境輪流出，不會一直出同一類
 export function buildWordPool(deck, dir, cats, levels) {
-  const items = ALL[deck]?.[dir]
-  if (!items) return []
+  if (!ALL[deck]) return []
+  const dirs = DECKS[deck].dirs.map((d) => d.key)
   const out = []
   for (const { key: level } of DECKS[deck].levels) {
     if (!levels.includes(level)) continue
-    // 漢→假只考有漢字的詞
-    const lists = DECKS[deck].cats.filter((c) => cats.includes(c.key)).map((c) =>
-      items.filter((w) => w.group === c.key && w.level === level && (dir !== 'kanji2kana' || w.ja !== w.kana)),
-    )
-    for (let i = 0; lists.some((l) => i < l.length); i++) {
-      for (const l of lists) if (l[i]) out.push(l[i])
+    if (dir !== MIX.key) {
+      out.push(...levelPool(deck, dir, cats, level))
+      continue
     }
+    const slots = []
+    levelPool(deck, dirs[0], cats, level).forEach((w, i) => {
+      const avail = dirs.filter((d) => d !== 'kanji2kana' || w.ja !== w.kana) // 沒漢字的詞不考漢→假
+      avail.forEach((_, j) => {
+        const d = avail[(i + j) % avail.length]
+        slots.push({ key: i + j * MIX_GAP, item: BY_ID.get(idOf(deck, d, w)) })
+      })
+    })
+    slots.sort((a, b) => a.key - b.key) // sort 是穩定的，同 key 保持詞的順序
+    out.push(...slots.map((x) => x.item))
+  }
+  return out
+}
+
+function levelPool(deck, dir, cats, level) {
+  const items = ALL[deck][dir]
+  // 漢→假只考有漢字的詞
+  const lists = DECKS[deck].cats.filter((c) => cats.includes(c.key)).map((c) =>
+    items.filter((w) => w.group === c.key && w.level === level && (dir !== 'kanji2kana' || w.ja !== w.kana)),
+  )
+  const out = []
+  for (let i = 0; lists.some((l) => i < l.length); i++) {
+    for (const l of lists) if (l[i]) out.push(l[i])
   }
   return out
 }

@@ -7,7 +7,7 @@ import HandwritePad from './HandwritePad.vue'
 import JpWord from './JpWord.vue'
 import { jpChunks, fitSize } from './jpBreak'
 import { playSfx, preloadSfx } from './sfx'
-import { WORD_CATS, LEVELS, DIRECTIONS, PHRASE_CATS, PHRASE_LEVELS, DECKS, buildWordPool, loadDeck, wordById, wordsByCat, makeChoices, plainZh, baseKey } from './words'
+import { WORD_CATS, LEVELS, DIRECTIONS, PHRASE_CATS, PHRASE_LEVELS, DECKS, MIX, buildWordPool, loadDeck, wordById, wordsByCat, makeChoices, plainZh, baseKey } from './words'
 
 const LS_SETTINGS = 'kana-quiz:settings'
 const LS_STATS = 'kana-quiz:stats'
@@ -38,7 +38,7 @@ const settings = reactive(
     similarOff: [], // 易混淆模式下關掉的組（記關掉的，預設全開）
     answer: 'type', // 'type' 看假名打拼音 | 'write' 看拼音手寫假名
     subject: 'kana', // 'kana' 假名 | 'vocab' 單字 | 'phrase' 短句
-    vocabDir: 'ja2zh', // 'ja2zh' 日翻中 | 'zh2ja' 中翻日
+    vocabDir: 'ja2zh', // 'ja2zh' 日翻中 | 'zh2ja' 中翻日 | 'kanji2kana' 漢→假 | 'mix' 混合
     vocabCats: WORD_CATS.map((c) => c.key),
     vocabLevels: LEVELS.map((l) => l.key),
     phraseDir: 'ja2zh',
@@ -131,7 +131,7 @@ function modeStats() {
     const id = write ? k.slice(WRITE_PREFIX.length) : k
     const item = itemById(id)
     if (!item || write !== writeMode.value) continue
-    if (vocab.value ? item.deck !== deck.value || item.dir !== deckDir.value : item.kind === 'vocab') continue
+    if (vocab.value ? item.deck !== deck.value || (deckDir.value !== MIX.key && item.dir !== deckDir.value) : item.kind === 'vocab') continue
     out.push([id, st])
   }
   return out
@@ -863,7 +863,7 @@ onBeforeUnmount(() => {
       <section class="quiz" @click="focusInput">
         <div class="quiz-top">
           <div v-if="vocab" class="seg answer-seg">
-            <button v-for="d in deckInfo.dirs" :key="d.key" :class="{ on: deckDir === d.key }" @click.stop="setDir(d.key)">
+            <button v-for="d in [...deckInfo.dirs, MIX]" :key="d.key" :class="{ on: deckDir === d.key }" @click.stop="setDir(d.key)">
               {{ d.label }}
             </button>
           </div>
