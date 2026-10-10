@@ -202,8 +202,8 @@ function levelPool(deck, dir, cats, level) {
   return out
 }
 
-export function wordsByCat(items, deck) {
-  return DECKS[deck].cats.map((c) => ({ key: c.key, label: c.label, items: items.filter((w) => w.group === c.key) })).filter(
+export function wordsByCat(items, cats) {
+  return cats.map((c) => ({ key: c.key, label: c.label, items: items.filter((w) => w.group === c.key) })).filter(
     (g) => g.items.length,
   )
 }

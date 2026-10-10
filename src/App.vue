@@ -7,6 +7,7 @@ import HandwritePad from './HandwritePad.vue'
 import JpWord from './JpWord.vue'
 import DialogQuiz from './DialogQuiz.vue'
 import { DIALOG_LEVELS, loadDialogs, dialogById, dialogCats, buildDialogPool } from './dialogs'
+import { GRAMMAR_CATS, GRAMMAR_LEVELS, loadGrammar, grammarById, buildGrammarPool, makeGrammarQ } from './grammar'
 import { jpChunks, fitSize } from './jpBreak'
 import { playSfx, preloadSfx } from './sfx'
 import { WORD_CATS, LEVELS, DIRECTIONS, PHRASE_CATS, PHRASE_LEVELS, DECKS, MIX, buildWordPool, loadDeck, wordById, wordsByCat, makeChoices, plainZh, baseKey } from './words'
@@ -39,7 +40,7 @@ const settings = reactive(
     mode: 'normal', // 'normal' 依分類 | 'similar' 易混淆
     similarOff: [], // 易混淆模式下關掉的組（記關掉的，預設全開）
     answer: 'type', // 'type' 看假名打拼音 | 'write' 看拼音手寫假名
-    subject: 'kana', // 'kana' 假名 | 'vocab' 單字 | 'phrase' 短句 | 'dialog' 會話
+    subject: 'kana', // 'kana' 假名 | 'vocab' 單字 | 'phrase' 短句 | 'dialog' 會話 | 'grammar' 語法
     vocabDir: 'ja2zh', // 'ja2zh' 日翻中 | 'zh2ja' 中翻日 | 'kanji2kana' 漢→假 | 'mix' 混合
     vocabCats: WORD_CATS.map((c) => c.key),
     vocabLevels: LEVELS.map((l) => l.key),
@@ -48,6 +49,8 @@ const settings = reactive(
     phraseLevels: PHRASE_LEVELS.map((l) => l.key),
     dialogCats: PHRASE_CATS.map((c) => c.key),
     dialogLevels: DIALOG_LEVELS.map((l) => l.key),
+    grammarCats: GRAMMAR_CATS.map((c) => c.key),
+    grammarLevels: GRAMMAR_LEVELS.map((l) => l.key),
     vocabShow: 'kana', // 日文怎麼顯示：'kana' 假名 | 'kanji' 漢字 | 'both' 漢字上標假名
   }),
 )
@@ -81,20 +84,24 @@ function toggleSimilar(key) {
   else if (off.length < SIMILAR_SETS.length - 1) off.push(key)
 }
 
-// 單字、短句、會話都是選擇題（共用 vocab 這套流程：漸進出題、錯題複習），差在題庫和各自的設定
-// 會話的題目卡片、選項換成 DialogQuiz 元件
-const vocab = computed(() => ['vocab', 'phrase', 'dialog'].includes(settings.subject))
+// 單字、短句、會話、語法都是選擇題（共用 vocab 這套流程：漸進出題、錯題複習），差在題庫和各自的設定
+// 會話的題目卡片、選項換成 DialogQuiz 元件；語法的題目是挖空的句子（每次從文法點的例句裡挑一句）
+const vocab = computed(() => ['vocab', 'phrase', 'dialog', 'grammar'].includes(settings.subject))
 const dialog = computed(() => settings.subject === 'dialog')
-const deck = computed(() => (['phrase', 'dialog'].includes(settings.subject) ? settings.subject : 'vocab'))
-const loaded = reactive({ vocab: false, phrase: false, dialog: false })
-const deckInfo = computed(() =>
-  deck.value === 'dialog' ? { cats: loaded.dialog ? dialogCats() : [], levels: DIALOG_LEVELS, dirs: [] } : DECKS[deck.value],
-)
-// 各題庫自己的設定 key（會話沒有出題方向）
+const grammar = computed(() => settings.subject === 'grammar')
+const deck = computed(() => (['phrase', 'dialog', 'grammar'].includes(settings.subject) ? settings.subject : 'vocab'))
+const loaded = reactive({ vocab: false, phrase: false, dialog: false, grammar: false })
+const deckInfo = computed(() => {
+  if (deck.value === 'dialog') return { cats: loaded.dialog ? dialogCats() : [], levels: DIALOG_LEVELS, dirs: [] }
+  if (deck.value === 'grammar') return { cats: GRAMMAR_CATS, levels: GRAMMAR_LEVELS, dirs: [] }
+  return DECKS[deck.value]
+})
+// 各題庫自己的設定 key（會話、語法沒有出題方向）
 const DECK_KEYS = {
   vocab: { dir: 'vocabDir', cats: 'vocabCats', levels: 'vocabLevels' },
   phrase: { dir: 'phraseDir', cats: 'phraseCats', levels: 'phraseLevels' },
   dialog: { cats: 'dialogCats', levels: 'dialogLevels' },
+  grammar: { cats: 'grammarCats', levels: 'grammarLevels' },
 }
 const deckSetting = (kind) =>
   computed({
@@ -108,11 +115,12 @@ const deckLevels = deckSetting('levels')
 const vocabReady = computed(() => loaded[deck.value])
 watch(
   [vocab, deck],
-  ([on, d]) => on && (d === 'dialog' ? loadDialogs() : loadDeck(d)).then(() => (loaded[d] = true)),
+  ([on, d]) => on && ({ dialog: loadDialogs, grammar: loadGrammar }[d] || loadDeck)(d).then(() => (loaded[d] = true)),
   { immediate: true },
 )
 const pool = computed(() => {
   if (dialog.value) return vocabReady.value ? buildDialogPool(deckCats.value, deckLevels.value) : []
+  if (grammar.value) return vocabReady.value ? buildGrammarPool(deckCats.value, deckLevels.value) : []
   if (vocab.value) return vocabReady.value ? buildWordPool(deck.value, deckDir.value, deckCats.value, deckLevels.value) : []
   return settings.mode === 'similar' ? buildSimilarPool(settings.similarOff) : buildPool(settings.scripts, settings.groups)
 })
@@ -120,9 +128,11 @@ const pool = computed(() => {
 const writeMode = computed(() => !vocab.value && settings.answer === 'write')
 
 const ALL_KANA = new Map(buildPool(SCRIPTS.map((s) => s.key), GROUPS.map((g) => g.key)).map((x) => [x.id, x]))
-const itemById = (id) => ALL_KANA.get(id) ?? wordById(id) ?? dialogById(id)
+const itemById = (id) => ALL_KANA.get(id) ?? wordById(id) ?? dialogById(id) ?? grammarById(id)
 // 字卡下方的小字：假名顯示拼音，單字顯示中文
 const caption = (x) => x.caption ?? x.romaji[0]
+// 最近、弱點列表：短句、文法名稱這類長的用小字，不然一個就佔一整行
+const isLong = (x) => Array.from(x.display).length > 5
 
 // ---- 每個假名的累積紀錄（用來加權出題 / 弱點列表）----
 const kanaStats = reactive(load(LS_STATS, {}))
@@ -181,7 +191,7 @@ const history = ref([]) // 最近作答 { item, ok }
 
 // ---- 題目 ----
 const current = ref(null)
-const card = reactive({ options: [], wrongIds: [], isNew: false, missed: false, hint: false, review: false, startedAt: 0, flash: '', shake: false, font: 0 })
+const card = reactive({ q: null, options: [], wrongIds: [], isNew: false, missed: false, hint: false, review: false, startedAt: 0, flash: '', shake: false, font: 0 })
 const inputEl = ref(null)
 let recent = []
 let locked = false
@@ -276,8 +286,11 @@ function showCard(next) {
   while (recent.length > Math.min(4, p.length - 1)) recent.shift()
 
   current.value = next
+  // 語法：這次出哪一句、哪幾個選項
+  const q = next.deck === 'grammar' ? makeGrammarQ(next) : null
   Object.assign(card, {
-    options: vocab.value && !dialog.value ? makeChoices(next, confusedWith(next)) : [],
+    q,
+    options: q ? q.options : vocab.value && !dialog.value ? makeChoices(next, confusedWith(next)) : [],
     wrongIds: [],
     isNew: !kanaStats[sk(next.id)], missed: false, hint: false, review: false, startedAt: performance.now(), flash: '', shake: false,
     // 同樣是黑體，き、さ、り 有連筆／分開、け、は 有勾／直的，每題隨機換一種，各種寫法都要認得
@@ -296,13 +309,21 @@ let autoSpeakTimer = 0
 let afterSpoken = null
 let blockedSpeech = null // 被瀏覽器擋下（還沒點過頁面）的那題，第一次點擊後補唸 // 答對後「唸完答案才換題」的等待：{ next, arm }
 
+// 字卡左上角的小標籤：題庫難度・出題方向（語法是難度・分類）
+const cardTag = computed(() => {
+  const x = current.value
+  if (!x) return ''
+  if (x.deck === 'grammar') return `${GRAMMAR_LEVELS[x.level - 1].label} · ${GRAMMAR_CATS.find((c) => c.key === x.cat).label}`
+  if (vocab.value) return `${DECKS[x.deck].levels[x.level - 1].label} · ${DIRECTIONS.find((d) => d.key === x.dir).label}`
+  return x.script === 'kata' ? '片' : '平'
+})
+
 const KANA_FONTS = 4 // style.css 的 .kana-font-0 … 3
 const kanaFont = computed(() => `kana-font-${card.font}`)
 
-// 中翻日的題目，發音就是答案：自動播放改成答完才播
-// 中→日、漢→假的發音就是答案：自動播放改成答完才唸
+// 中→日、漢→假的發音就是答案、語法唸整句會聽到挖空的答案：自動播放改成答完才唸
 function answerIsSpoken() {
-  return current.value?.dir === 'zh2ja' || current.value?.dir === 'kanji2kana'
+  return current.value?.dir === 'zh2ja' || current.value?.dir === 'kanji2kana' || current.value?.deck === 'grammar'
 }
 
 // 播音效；麥克風開著時先暫停比對，免得收到音效聲
@@ -354,8 +375,8 @@ function markCorrect({ advance = true } = {}) {
   card.flash = 'ok'
   feedback('ok')
   if (!advance) return
-  // 短句：答對後停下來，每個選項都顯示意思，看完按「下一題」才換（答案是發音的照樣唸一次）
-  if (deck.value === 'phrase') {
+  // 短句、語法：答對後停下來，每個選項都顯示意思，看完按「下一題」才換（答案是發音的照樣唸一次）
+  if (deck.value === 'phrase' || deck.value === 'grammar') {
     card.review = true
     if (settings.autoSpeak && answerIsSpoken() && !card.hint) setTimeout(() => playSound(), settings.sfx ? 450 : 0)
     return
@@ -434,7 +455,8 @@ function choose(opt) {
   if (opt.id === current.value.id) return markCorrect()
   if (card.wrongIds.includes(opt.id)) return // 已經選錯過的不重複扣
   card.wrongIds.push(opt.id)
-  if (!opt.fake) recordConfusion(current.value, opt) // 造出來的錯誤讀音不是真的字，不用記
+  // 造出來的錯誤讀音不是真的字、語法的選項是跟著例句的，不用記
+  if (!opt.fake && current.value.deck !== 'grammar') recordConfusion(current.value, opt)
   markWrong({ reveal: false })
 }
 
@@ -630,10 +652,13 @@ function playSound(onEnd) {
   }
   clearTimeout(autoSpeakTimer) // 自己按了發音，就不用再自動唸一次
   if (!current.value) return onEnd?.()
+  // 語法：唸的是填好答案的整句，答完才能聽
+  const isGrammar = current.value.deck === 'grammar'
+  if (isGrammar && !revealed()) return onEnd?.()
   // 播放時暫停比對，避免麥克風收到喇叭聲音自動答對
   ignoreSpeechUntil = Infinity
   const id = current.value.id
-  speak(current.value.say ?? current.value.hira, (reason) => {
+  speak(isGrammar ? card.q.kana : current.value.say ?? current.value.hira, (reason) => {
     ignoreSpeechUntil = performance.now() + 500
     if (reason === 'not-allowed') blockedSpeech = id
     onEnd?.(reason)
@@ -724,8 +749,8 @@ const chartSections = computed(() => {
       {
         key: 'vocab',
         // 單字太多，只列學過的
-        title: { phrase: '學過的短句', dialog: '學過的會話' }[deck.value] || '學過的單字',
-        groups: wordsByCat(pool.value.filter((w) => kanaStats[w.id]), deck.value).map((g) => ({ ...g, words: true })),
+        title: { phrase: '學過的短句', dialog: '學過的會話', grammar: '學過的語法' }[deck.value] || '學過的單字',
+        groups: wordsByCat(pool.value.filter((w) => kanaStats[w.id]), deckInfo.value.cats).map((g) => ({ ...g, words: true })),
       },
     ]
   }
@@ -841,6 +866,7 @@ onBeforeUnmount(() => {
         <button :class="{ on: settings.subject === 'vocab' }" @click="settings.subject = 'vocab'">單字</button>
         <button :class="{ on: settings.subject === 'phrase' }" @click="settings.subject = 'phrase'">短句</button>
         <button :class="{ on: settings.subject === 'dialog' }" @click="settings.subject = 'dialog'">會話</button>
+        <button :class="{ on: settings.subject === 'grammar' }" @click="settings.subject = 'grammar'">語法</button>
       </div>
       <button class="settings-btn" :class="{ on: settingsOpen }" @click="settingsOpen = !settingsOpen">
         {{ settingsOpen ? '完成' : `題庫 ${pool.length} ▾` }}
@@ -919,7 +945,7 @@ onBeforeUnmount(() => {
     <main class="stage">
       <section class="quiz" @click="focusInput">
         <div class="quiz-top">
-          <div v-if="vocab && !dialog" class="seg answer-seg">
+          <div v-if="vocab && deckInfo.dirs.length" class="seg answer-seg">
             <button v-for="d in [...deckInfo.dirs, MIX]" :key="d.key" :class="{ on: deckDir === d.key }" @click.stop="setDir(d.key)">
               {{ d.label }}
             </button>
@@ -986,14 +1012,25 @@ onBeforeUnmount(() => {
           v-if="current && !dialog"
           ref="cardEl"
           class="card"
-          :class="[{ ok: card.flash === 'ok', shake: card.shake, kata: current.script === 'kata', prompt: writeMode || vocab }, kanaFont]"
+          :class="[{ ok: card.flash === 'ok', shake: card.shake, kata: current.script === 'kata', prompt: writeMode || vocab, gram: card.q }, kanaFont]"
         >
-          <span class="script-tag">{{ vocab ? `${DECKS[current.deck].levels[current.level - 1].label} · ${DIRECTIONS.find((d) => d.key === current.dir).label}` : current.script === 'kata' ? '片' : '平' }}</span>
+          <span class="script-tag">{{ cardTag }}</span>
           <span v-if="currentReview !== null" class="review-tag" :title="`複習中：再連續答對 ${REVIEW_STREAK - currentReview} 次`">
             複習 <i v-for="n in REVIEW_STREAK" :key="n" :class="{ done: n <= currentReview }" />
           </span>
-          <span v-else-if="card.isNew" class="review-tag">{{ vocab ? (current.deck === 'phrase' ? '新短句' : '新單字') : '新字' }}</span>
-          <template v-if="vocab">
+          <span v-else-if="card.isNew" class="review-tag">{{ vocab ? { phrase: '新短句', grammar: '新語法' }[current.deck] || '新單字' : '新字' }}</span>
+          <!-- 語法：挖空的句子，答完把答案填進空格；中文一開始就給（分辨時態、可以／不可以這類要靠意思） -->
+          <template v-if="card.q">
+            <div class="gram-sentence" :class="{ ruby: settings.vocabShow === 'both' }">
+              <JpWord v-if="card.q.before.ja" :word="card.q.before" :mode="settings.vocabShow" /><span
+                class="gram-blank"
+                :class="{ filled: revealed() }"
+                ><JpWord v-if="revealed()" :word="card.q.answer" :mode="settings.vocabShow" /></span
+              ><JpWord v-if="card.q.after.ja" :word="card.q.after" :mode="settings.vocabShow" />
+            </div>
+            <div class="gram-zh">{{ card.q.zh }}</div>
+          </template>
+          <template v-else-if="vocab">
             <template v-if="current.dir === 'ja2zh'">
               <JpWord class="word" :class="{ ruby: settings.vocabShow === 'both', long: current.deck === 'phrase' }" :word="current" :mode="settings.vocabShow" :style="jpSize(current, settings.vocabShow)" />
               <div class="word-reading"><JpWord v-if="jpSub(current, revealed())" :word="current" :mode="settings.vocabShow === 'kana' ? 'kanji' : 'kana'" /></div>
@@ -1026,7 +1063,11 @@ onBeforeUnmount(() => {
           <div class="options" :class="kanaFont">
             <button v-for="(opt, i) in card.options" :key="opt.id" class="opt" :class="optionClass(opt)" @click.stop="choose(opt)">
               <span class="num">{{ i + 1 }}</span>
-              <template v-if="current.dir === 'ja2zh'">
+              <template v-if="card.q">
+                <JpWord class="main" :word="opt" :mode="settings.vocabShow" />
+                <small v-if="optShown(opt)" class="zh" :class="{ fake: opt.fake }">{{ opt.zh }}</small>
+              </template>
+              <template v-else-if="current.dir === 'ja2zh'">
                 <span class="main">{{ optShown(opt) ? opt.zh : plainZh(opt.zh) }}</span>
                 <small v-if="optShown(opt)" class="sub-ruby"><JpWord :word="opt" mode="both" compact /></small>
               </template>
@@ -1041,15 +1082,19 @@ onBeforeUnmount(() => {
               </template>
             </button>
           </div>
+          <div v-if="card.q && revealed()" class="gram-note">
+            <div><b lang="ja">{{ current.form }}</b>{{ current.mean }}</div>
+            <p>{{ current.note }}</p>
+          </div>
           <div class="actions vocab">
-            <button class="btn" title="Esc" @click.stop="playSound">🔊<span class="label"> 發音</span></button>
+            <button class="btn" title="Esc" :disabled="card.q && !revealed()" @click.stop="playSound">🔊<span class="label"> 發音</span></button>
             <button class="btn" title="Enter" @click.stop="skip">{{ card.hint || card.review ? '下一題' : '看答案' }}</button>
           </div>
           <div class="speech-line">
             <template v-if="card.review">看完各選項的意思，按「下一題」繼續{{ isTouch ? '' : '（Enter）' }}</template>
             <template v-else-if="card.hint">點正確答案（綠色）繼續</template>
             <template v-else-if="card.wrongIds.length && card.flash !== 'ok'">不對喔，再選一次</template>
-            <template v-else-if="!isTouch">1–4：選答案　Enter：看答案 / 下一題　Esc：聽發音</template>
+            <template v-else-if="!isTouch">1–4：選答案　Enter：看答案 / 下一題　Esc：{{ card.q ? '聽整句（答完後）' : '聽發音' }}</template>
           </div>
         </template>
 
@@ -1180,7 +1225,7 @@ onBeforeUnmount(() => {
         <div v-if="history.length" class="block">
           <h3>最近</h3>
           <TransitionGroup tag="div" name="pop" class="history">
-            <span v-for="h in history" :key="h.key" class="h" :class="h.ok ? 'good' : 'bad'" :title="caption(h.item)">
+            <span v-for="h in history" :key="h.key" class="h" :class="[h.ok ? 'good' : 'bad', { long: isLong(h.item) }]" :title="caption(h.item)">
               {{ h.item.display }}<small>{{ caption(h.item) }}</small>
             </span>
           </TransitionGroup>
@@ -1189,7 +1234,7 @@ onBeforeUnmount(() => {
         <div v-if="reviewList.length" class="block">
           <h3>待複習 · 連續答對 {{ REVIEW_STREAK }} 次過關</h3>
           <div class="weak">
-            <span v-for="r in reviewList" :key="r.id" class="w" lang="ja">
+            <span v-for="r in reviewList" :key="r.id" class="w" :class="{ long: isLong(r.item) }" lang="ja">
               {{ r.item.display }}<small class="dots"><i v-for="n in REVIEW_STREAK" :key="n" :class="{ done: n <= r.done }" /></small>
             </span>
           </div>
@@ -1198,7 +1243,7 @@ onBeforeUnmount(() => {
         <div v-if="weakList.length" class="block">
           <h3>弱點</h3>
           <div class="weak">
-            <span v-for="w in weakList" :key="w.id" class="w">
+            <span v-for="w in weakList" :key="w.id" class="w" :class="{ long: isLong(w.item) }">
               {{ w.item.display }}<small>{{ caption(w.item) }} · 錯 {{ w.miss }}</small>
             </span>
           </div>
@@ -1215,7 +1260,7 @@ onBeforeUnmount(() => {
       <p v-if="deck === 'vocab' && vocab" class="credit">
         詞表來源：<a href="http://www.tanos.co.uk/jlpt/" target="_blank" rel="noopener">tanos.co.uk JLPT 詞彙表</a>（CC BY），振假名依 <a href="https://www.edrdg.org/wiki/index.php/KANJIDIC_Project" target="_blank" rel="noopener">KANJIDIC</a>（EDRDG，CC BY-SA）切分，中文釋義與分類另行整理
       </p>
-      <p v-if="vocab && !chartSections[0].groups.length" class="credit">{{ { phrase: '還沒有學過的短句', dialog: '還沒有學過的會話' }[deck] || '還沒有學過的單字' }}</p>
+      <p v-if="vocab && !chartSections[0].groups.length" class="credit">{{ { phrase: '還沒有學過的短句', dialog: '還沒有學過的會話', grammar: '還沒有學過的語法' }[deck] || '還沒有學過的單字' }}</p>
       <div v-for="sec in chartSections" :key="sec.key">
         <h3>{{ sec.title }}</h3>
         <div v-for="g in sec.groups" :key="g.key" class="chart-group">
