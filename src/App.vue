@@ -64,6 +64,13 @@ for (const { key } of PHRASE_CATS) {
   settings.phraseCatsSeen.push(key)
   if (!settings.phraseCats.includes(key)) settings.phraseCats.push(key)
 }
+// 語法之後新增的難度（N2、N1）：同樣自動勾上
+settings.grammarLevelsSeen ||= [1, 2, 3]
+for (const { key } of GRAMMAR_LEVELS) {
+  if (settings.grammarLevelsSeen.includes(key)) continue
+  settings.grammarLevelsSeen.push(key)
+  if (!settings.grammarLevels.includes(key)) settings.grammarLevels.push(key)
+}
 watch(settings, (v) => save(LS_SETTINGS, v), { deep: true })
 
 function toggleIn(list, key) {

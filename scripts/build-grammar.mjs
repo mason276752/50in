@@ -11,15 +11,6 @@ const errors = []
 const warnings = []
 const CATS = ['p', 'v', 'a', 'j', 'e', 'g', 'q']
 
-// 選項的中文說明：句子裡沒寫的查 gloss.txt（は、が、を 這類寫一次就好）
-const GLOSS = new Map()
-for (const line of fs.readFileSync(path.join(dir, 'gloss.txt'), 'utf8').split('\n')) {
-  const t = line.trim()
-  if (!t || t.startsWith('#')) continue
-  const i = t.indexOf('/')
-  GLOSS.set(t.slice(0, i), t.slice(i + 1))
-}
-const missing = new Map()
 
 const RUN = /[0-9０-９一-鿿々〆〇]/
 const KANJI = /[一-鿿々〆〇]/
@@ -36,7 +27,7 @@ function rubySegs(run, rt, where) {
   throw new Error(`${where}：「${run}(${rt})」讀音對不上單字庫，確定沒寫錯的話加進 build-grammar.mjs 的 MANUAL`)
 }
 // 單字庫沒有、但確定正確的讀法
-const MANUAL = new Set(`一人=ひとり 納豆=なっとう`.split(/\s+/))
+const MANUAL = new Set(`一人=ひとり 納豆=なっとう 我=わ 偽物=にせもの 寿司=すし 豆腐=とうふ 堪=た 否=いな 忍=しの 難=かた 形見=かたみ 完璧=かんぺき`.split(/\s+/))
 
 // 「毎朝(まいあさ)7時(しちじ)に」→ [['毎','まい'],['朝','あさ'],['7時','しちじ'],['に']]
 // ctx：同一句其他地方標過的讀音（選項裡同一個詞可以不再標）
@@ -78,6 +69,26 @@ function parseRuby(str, where, ctx) {
 }
 const textOf = (segs) => segs.map((s) => s[0]).join('')
 
+// 選項的中文說明：句子裡沒寫的查 gloss.txt（は、が、を 這類寫一次就好）
+// gloss.txt 的日文也可以標讀音（に反(はん)して）：選項沒標讀音時沿用，複合助詞不用每次都標
+const GLOSS = new Map()
+const GLOSS_SEGS = new Map()
+fs.readFileSync(path.join(dir, 'gloss.txt'), 'utf8')
+  .split('\n')
+  .forEach((line, n) => {
+    const t = line.trim()
+    if (!t || t.startsWith('#')) return
+    const i = t.indexOf('/')
+    try {
+      const segs = parseRuby(t.slice(0, i), `gloss.txt:${n + 1}`, new Map())
+      GLOSS.set(textOf(segs), t.slice(i + 1))
+      GLOSS_SEGS.set(textOf(segs), segs)
+    } catch (e) {
+      errors.push(e.message)
+    }
+  })
+const missing = new Map()
+
 function glossOf(ja, inline, bad, where) {
   if (inline) return inline
   if (bad) return '錯誤用法'
@@ -91,7 +102,8 @@ function glossOf(ja, inline, bad, where) {
 function parseOpt(raw, where, ctx) {
   const bad = raw.startsWith('!')
   const [ja, zh] = (bad ? raw.slice(1) : raw).split('/')
-  const segs = parseRuby(ja.trim(), where, ctx)
+  const plain = ja.trim()
+  const segs = !plain.includes('(') && GLOSS_SEGS.has(plain) ? GLOSS_SEGS.get(plain) : parseRuby(plain, where, ctx)
   const out = [segs, glossOf(textOf(segs), zh?.trim(), bad, where)]
   return bad ? [...out, 1] : out
 }
@@ -107,7 +119,7 @@ function parseLine(line, where) {
       .map((s) => s.trim())
     if (note == null) throw new Error(`${where}：文法點格式要 == 代號|難度|分類|文法|意思|說明`)
     if (!/^[a-z0-9-]+$/.test(key)) throw new Error(`${where}：代號只能用小寫英數和 -`)
-    if (!['1', '2', '3'].includes(level)) throw new Error(`${where}：難度要 1～3`)
+    if (!['1', '2', '3', '4', '5'].includes(level)) throw new Error(`${where}：難度要 1～5`)
     if (!CATS.includes(cat)) throw new Error(`${where}：沒有「${cat}」這個分類`)
     p = { key, level: +level, cat, form, mean, note, qs: [] }
     points.push(p)
@@ -170,6 +182,6 @@ if (errors.length) {
 }
 
 fs.writeFileSync(path.join(ROOT, 'src/data/grammar.json'), JSON.stringify({ points }))
-const byLevel = [1, 2, 3].map((l) => points.filter((x) => x.level === l).length)
-console.log(`${points.length} 個文法點（N5 ${byLevel[0]}、N4 ${byLevel[1]}、N3 ${byLevel[2]}）、${points.reduce((n, x) => n + x.qs.length, 0)} 句`)
+const byLevel = ['N5', 'N4', 'N3', 'N2', 'N1'].map((name, i) => `${name} ${points.filter((x) => x.level === i + 1).length}`)
+console.log(`${points.length} 個文法點（${byLevel.join('、')}）、${points.reduce((n, x) => n + x.qs.length, 0)} 句`)
 for (const w of warnings) console.log('注意', w)

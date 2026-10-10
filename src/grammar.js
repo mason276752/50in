@@ -9,6 +9,8 @@ export const GRAMMAR_LEVELS = [
   { key: 1, label: 'N5' },
   { key: 2, label: 'N4' },
   { key: 3, label: 'N3' },
+  { key: 4, label: 'N2' },
+  { key: 5, label: 'N1' },
 ]
 
 export const GRAMMAR_CATS = [
