@@ -44,7 +44,7 @@ for (const file of ['vocab.tsv', 'phrases.tsv']) {
 const MANUAL = `佐藤=さとう 美咲=みさき 山手=やまのて 彩=あや 李=り 〇=まる 取引=とりひき
   藤=とう 吉=よし 本=もと 伊=い 井上=いのうえ 清水=しみず 岡=おか 黄=こう 劉=りゅう 呉=ご 蔡=さい 楊=よう
   太=た 翔=しょう 輔=すけ 也=や 亮=りょう 樹=き 隆=たかし 美=み 恵=めぐみ 尋=ひろ 千=ち
-  渋=しぶ 谷=や 奈=な 良=ら 沢=さわ 神戸=こうべ 韓=かん 緑=りょく 丼=どん 斗=と 北=ほく 魚=ざかな 唐=から 厨=ちゅう 却=きゃく`
+  渋=しぶ 谷=や 奈=な 良=ら 沢=さわ 神戸=こうべ 韓=かん 緑=りょく 丼=どん 斗=と 北=ほく 魚=ざかな 唐=から 厨=ちゅう 却=きゃく 詣=もうで 窓=そう 炊=だ 麺=めん 見積=みつもり 竜=りゅう 作=づく 引=び 佐々木=ささき 荷=か 声=ごえ 香港=ほんこん 懐=かい 人々=ひとびと 唐辛子=とうがらし`
   .split(/\s+/)
   .map((x) => x.split('='))
 for (const [k, v] of MANUAL) {
@@ -282,9 +282,27 @@ function parseJa(d, ja, kana, where) {
   })
   return parts
 }
+// 選項：日文[=讀音][/中文]；沒寫中文就查 gloss.txt（常見的助詞、句子寫一次就好）
+const GLOSS = new Map()
+for (const line of fs.readFileSync(path.join(ROOT, 'scripts/dialogs/gloss.txt'), 'utf8').split('\n')) {
+  const t = line.trim()
+  if (!t || t.startsWith('#')) continue
+  const i = t.indexOf('/')
+  GLOSS.set(t.slice(0, i), t.slice(i + 1))
+}
+const missingZh = new Map() // 日文 → 出現的位置
+function zhOf(d, ja, inline, where) {
+  const zh = inline ?? GLOSS.get(ja) ?? (/^\{\w+\}$/.test(ja) ? ja : null)
+  if (zh == null) {
+    if (!missingZh.has(ja)) missingZh.set(ja, where)
+    return ''
+  }
+  return checkZh(d, zh, where)
+}
 const parseOpt = (d, s, where) => {
-  const [ja, kana] = s.split('=')
-  return parseJa(d, ja, kana, where)
+  const [jk, zh] = s.split('/')
+  const [ja, kana] = jk.split('=')
+  return { p: parseJa(d, ja, kana, where), z: zhOf(d, ja, zh, where) }
 }
 
 // 挖空：在 parts 裡切出要挖的那段（變數整個是一格，不能切）
@@ -422,7 +440,8 @@ function parseLine(line, where) {
     const [type, ...rest] = line.slice(1).split('|')
     let q
     if (type === 'cloze') {
-      const [li, target, wrong] = rest
+      const [li, spec, wrong] = rest
+      const [target, tzh] = spec.split('/')
       const L = d.lines[+li]
       if (!L) throw new Error(`${where}：沒有第 ${li} 句`)
       const sm = target.match(/^\{(\w+)\}$/)
@@ -437,7 +456,7 @@ function parseLine(line, where) {
       } else cut = cutParts(L.parts, target, where)
       const w = wrong.split(';').map((s) => (s === '*' ? '*' : parseOpt(d, s, where)))
       if (w.includes('*') && !sm) throw new Error(`${where}：只有挖空變數時才能用 * 自動出選項`)
-      q = { type, line: +li, ...cut, w }
+      q = { type, line: +li, ...cut, w, ...(!sm && { az: zhOf(d, target.split('#')[0], tzh, where) }) }
     } else if (type === 'reply') {
       const [li, wrong] = rest
       if (!d.lines[+li]) throw new Error(`${where}：沒有第 ${li} 句`)
@@ -521,6 +540,12 @@ for (const d of dialogs) {
   const n = d.qs.filter((q) => !q.c).length
   if (d.qs.length < 4) warnings.push(`#${d.id} ${d.title}：候選題只有 ${d.qs.length} 題，每次都出一樣的題`)
   if (!d.slots.length && n) warnings.push(`#${d.id} ${d.title}：沒有變數，內容每次都一樣`)
+}
+const missingFile = path.join(ROOT, 'scripts/dialogs/.missing.txt')
+fs.rmSync(missingFile, { force: true })
+if (missingZh.size) {
+  errors.push(`有 ${missingZh.size} 個選項沒有中文，請補在 scripts/dialogs/gloss.txt（或在選項後面寫 /中文），清單在 scripts/dialogs/.missing.txt`)
+  fs.writeFileSync(missingFile, [...missingZh].map(([ja, where]) => `${ja}/\t# ${where}`).join('\n') + '\n')
 }
 if (errors.length) {
   for (const e of [...new Set(errors)].slice(0, 40)) console.error('錯誤', e)

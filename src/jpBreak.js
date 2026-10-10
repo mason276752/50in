@@ -17,11 +17,14 @@ function jaBreaks(ja) {
   let chunkLen = 0
   // 接頭的お／ご（お願い、ご確認）算進後面的實詞
   const isPrefix = (i) => /^[おご]$/.test(segs[i]?.text) && /^[\u4e00-\u9fff]/.test(segs[i + 1]?.text || '')
+  // ございます前面也可以斷（おめでとう｜ございます），選項格子窄的時候才不會斷成 おめでとうご｜ざいます
+  const chars = Array.from(ja)
+  const gozai = (i) => chars.slice(segs[i].at, segs[i].at + 3).join('') === 'ござい'
   segs.forEach((s, i) => {
     const prev = segs[i - 1]
     let brk = false
     if (prev && PUNCT.test(prev.text.at(-1)) && !PUNCT.test(s.text)) brk = true // 、後面一定可以斷
-    else if (prev && !isPrefix(i - 1) && (isPrefix(i) || !isFunc(s.text))) {
+    else if (prev && !isPrefix(i - 1) && (isPrefix(i) || !isFunc(s.text) || gozai(i))) {
       // 實詞前面可以斷；但連著兩個漢字詞（恐れ｜入り、準備｜中、手｜伝って）或片假名詞（マナー｜モード）是複合詞，不斷
       const compound =
         !isPrefix(i) && !isFunc(prev.text) && ((KANJI.test(prev.text) && KANJI.test(s.text[0])) || (KATA.test(prev.text) && KATA.test(s.text)))

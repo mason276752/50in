@@ -181,7 +181,7 @@ const history = ref([]) // 最近作答 { item, ok }
 
 // ---- 題目 ----
 const current = ref(null)
-const card = reactive({ options: [], wrongIds: [], isNew: false, missed: false, hint: false, startedAt: 0, flash: '', shake: false, font: 0 })
+const card = reactive({ options: [], wrongIds: [], isNew: false, missed: false, hint: false, review: false, startedAt: 0, flash: '', shake: false, font: 0 })
 const inputEl = ref(null)
 let recent = []
 let locked = false
@@ -279,7 +279,7 @@ function showCard(next) {
   Object.assign(card, {
     options: vocab.value && !dialog.value ? makeChoices(next, confusedWith(next)) : [],
     wrongIds: [],
-    isNew: !kanaStats[sk(next.id)], missed: false, hint: false, startedAt: performance.now(), flash: '', shake: false,
+    isNew: !kanaStats[sk(next.id)], missed: false, hint: false, review: false, startedAt: performance.now(), flash: '', shake: false,
     // 同樣是黑體，き、さ、り 有連筆／分開、け、は 有勾／直的，每題隨機換一種，各種寫法都要認得
     font: Math.floor(Math.random() * KANA_FONTS) })
   clearInput()
@@ -354,6 +354,12 @@ function markCorrect({ advance = true } = {}) {
   card.flash = 'ok'
   feedback('ok')
   if (!advance) return
+  // 短句：答對後停下來，每個選項都顯示意思，看完按「下一題」才換（答案是發音的照樣唸一次）
+  if (deck.value === 'phrase') {
+    card.review = true
+    if (settings.autoSpeak && answerIsSpoken() && !card.hint) setTimeout(() => playSound(), settings.sfx ? 450 : 0)
+    return
+  }
   // 看答案時已經唸過，就不用再等一次
   if (settings.autoSpeak && answerIsSpoken() && !card.hint) {
     // 中→日、漢→假答對才唸：等音效播完再唸，唸完才換題，不然聲音會跟著跑到下一題的畫面
@@ -386,6 +392,7 @@ function nextDelay() {
 
 function skip() {
   if (dialog.value) return dialogEl.value?.enter()
+  if (card.review) return pickNext()
   if (!current.value || locked) return
   if (!card.hint) {
     markWrong({ silent: true }) // 第一次按：顯示答案
@@ -473,8 +480,9 @@ function wordSize(text) {
   return { fontSize: `${Math.min(30, 84 / perLine)}cqw` }
 }
 // 選項的說明（中文全文、讀音）：答完、看答案，或這格已經選錯過才顯示
-// 一次就答對不展開（只閃 0.65 秒，看不清楚又讓畫面跳動）；選錯過的題目答對後全部展開，多停一下讓人看
-const revealed = () => card.hint || (locked && card.missed)
+// 單字一次就答對不展開（只閃 0.65 秒，看不清楚又讓畫面跳動）；選錯過的題目答對後全部展開，多停一下讓人看
+// 短句答對後一律展開，停在這題等玩家按「下一題」
+const revealed = () => card.hint || (locked && (card.missed || card.review))
 const optShown = (opt) => revealed() || card.wrongIds.includes(opt.id)
 function optionClass(opt) {
   const isAnswer = opt.id === current.value?.id
@@ -1012,7 +1020,7 @@ onBeforeUnmount(() => {
         </div>
 
         <template v-if="dialog">
-          <div v-if="!isTouch" class="speech-line">1–4：選答案　Enter：看答案 / 下一段　Esc：整段播放</div>
+          <div v-if="!isTouch" class="speech-line">1–4：選答案　Enter：看答案 / 下一題　Esc：整段播放</div>
         </template>
         <template v-else-if="vocab">
           <div class="options" :class="kanaFont">
@@ -1035,10 +1043,11 @@ onBeforeUnmount(() => {
           </div>
           <div class="actions vocab">
             <button class="btn" title="Esc" @click.stop="playSound">🔊<span class="label"> 發音</span></button>
-            <button class="btn" title="Enter" @click.stop="skip">{{ card.hint ? '下一題' : '看答案' }}</button>
+            <button class="btn" title="Enter" @click.stop="skip">{{ card.hint || card.review ? '下一題' : '看答案' }}</button>
           </div>
           <div class="speech-line">
-            <template v-if="card.hint">點正確答案（綠色）繼續</template>
+            <template v-if="card.review">看完各選項的意思，按「下一題」繼續{{ isTouch ? '' : '（Enter）' }}</template>
+            <template v-else-if="card.hint">點正確答案（綠色）繼續</template>
             <template v-else-if="card.wrongIds.length && card.flash !== 'ok'">不對喔，再選一次</template>
             <template v-else-if="!isTouch">1–4：選答案　Enter：看答案 / 下一題　Esc：聽發音</template>
           </div>

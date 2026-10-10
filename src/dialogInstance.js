@@ -7,7 +7,7 @@
 //   data = { pools: { 名稱: 值[] }, dict: [[日文, 讀音, 中文]], dialogs: 範本[] }
 //   值 = { k?: 分支代號, ja, zh, f: 振假名段, g?: 字典索引[] }
 //   變數 = { n: 名稱, pool?: 共用值表, v?: 值[], same?: 跟哪個變數用同一份值表（值不重複）, link?: 跟哪個變數同一組（同一個位置）, keys?: 分支代號[] }
-//   日文（句子、選項）= parts：[文字, 讀音?] 或 { s: 變數名 }
+//   日文（句子）= parts：[文字, 讀音?] 或 { s: 變數名 }；日文選項 = { p: parts, z: 中文 }
 //   條件 = [[變數名, 是否「不等於」, 代號[]]]
 
 const COUNT = { 1: 3, 2: 3, 3: 4 } // 每段出幾題
@@ -128,23 +128,26 @@ function buildQuestion(t, data, vals, q, rand) {
     const options = assemble(answer, near, [...fixed, ...auto], (o) => o.zh, rand)
     return options && { type: 'read', q: fill(q.q, vals), options }
   }
-  const fixed = q.w.filter((w) => w !== '*').map((w) => render(w, vals))
+  // 日文選項都帶中文意思，答完顯示在選項下面
+  const fixed = q.w.filter((w) => w !== '*').map((w) => ({ ...render(w.p, vals), zh: fill(w.z, vals) }))
   if (q.type === 'reply') {
-    const options = assemble(render(t.lines[q.line].parts, vals), [], fixed, ja, rand)
+    const L = t.lines[q.line]
+    const options = assemble({ ...render(L.parts, vals), zh: fill(L.zh, vals) }, [], fixed, ja, rand)
     return options && { type: 'reply', line: q.line, options }
   }
   // cloze：挖空處切開；挖的是變數時，錯誤選項可以用它的其他值（*）
   const [a, b] = q.blank
   const pre = render(q.parts.slice(0, a), vals)
-  const mid = render(q.parts.slice(a, b), vals)
+  const mid = { ...render(q.parts.slice(a, b), vals), zh: q.az != null ? fill(q.az, vals) : vals[q.parts[a].s].zh }
   const post = render(q.parts.slice(b), vals)
   let near = []
   let auto = []
   if (q.w.includes('*')) {
     const n = q.parts[a].s
     const o = othersOf(t, data, vals, n)
-    near = o.near.map((v) => render([{ s: n }], { [n]: v }))
-    auto = o.rest.map((v) => render([{ s: n }], { [n]: v }))
+    const as = (v) => ({ ...render([{ s: n }], { [n]: v }), zh: v.zh })
+    near = o.near.map(as)
+    auto = o.rest.map(as)
   }
   const options = assemble(mid, near, [...fixed, ...auto], ja, rand)
   return (

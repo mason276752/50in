@@ -118,10 +118,11 @@ function stopAll() {
 onBeforeUnmount(stopAll)
 
 // ---- 作答 ----
-const lock = ref(false)
+// 答對後停在這題：每個選項底下都顯示中文，看完按「下一題」（Enter）才往下；最後一題按了才看全文翻譯
+const isLast = computed(() => state.qi === questions.length - 1)
 function choose(k) {
   const opt = q.value?.order[k]
-  if (!opt || state.done || lock.value) return
+  if (!opt || state.done || solved(state.qi)) return
   if (opt.i !== 0) {
     if (state.wrong.includes(k)) return
     state.wrong.push(k)
@@ -130,29 +131,31 @@ function choose(k) {
   }
   state.solved.push(state.qi)
   openGloss.value = -1
-  if (state.qi === questions.length - 1) {
+  emit(isLast.value ? 'done' : 'right')
+  scrollToQuestion()
+}
+function nextQuestion() {
+  if (!solved(state.qi)) return
+  if (isLast.value) {
     state.done = true
-    emit('done')
     return
   }
-  emit('right')
-  lock.value = true
-  setTimeout(() => {
-    Object.assign(state, { qi: state.qi + 1, wrong: [], revealed: false })
-    lock.value = false
-    scrollToQuestion()
-  }, 700)
+  Object.assign(state, { qi: state.qi + 1, wrong: [], revealed: false })
+  scrollToQuestion()
 }
 // 看答案：標出正解，還是要點它才往下（跟單字題一樣）
 function reveal() {
-  if (state.done || state.revealed) return
+  if (state.done || state.revealed || solved(state.qi)) return
   state.revealed = true
   emit('giveup')
 }
 function enter() {
   if (state.done) emit('next')
+  else if (solved(state.qi)) nextQuestion()
   else reveal()
 }
+// 日文選項的中文：答對、看答案後全部顯示；選錯的那格馬上顯示它的意思（不會洩漏答案）
+const showZh = (k) => solved(state.qi) || state.revealed || state.wrong.includes(k)
 const qEl = ref(null)
 function scrollToQuestion() {
   nextTick(() => qEl.value?.scrollIntoView?.({ block: 'nearest', behavior: 'smooth' }))
@@ -223,22 +226,28 @@ defineExpose({ choose, enter, reveal, playAll })
     <div v-if="!state.done" ref="qEl" class="dlg-question">
       <div class="dlg-qhead">
         <span>第 {{ state.qi + 1 }} / {{ questions.length }} 題 · {{ TYPE_LABEL[q.type] }}</span>
-        <button v-if="!state.revealed" class="link" @click.stop="reveal">看答案</button>
-        <span v-else class="dlg-revealed">點綠色的答案繼續</span>
+        <template v-if="!solved(state.qi)">
+          <button v-if="!state.revealed" class="link" @click.stop="reveal">看答案</button>
+          <span v-else class="dlg-revealed">點綠色的答案繼續</span>
+        </template>
       </div>
       <p class="dlg-prompt">{{ q.type === 'read' ? q.q : TYPE_HINT[q.type] }}</p>
       <div class="options dlg-options" :class="{ wide: q.type !== 'cloze' }">
         <button v-for="(opt, k) in q.order" :key="k" class="opt" :class="optClass(k)" @click.stop="choose(k)">
           <span class="num">{{ k + 1 }}</span>
-          <span v-if="opt.zh" class="main">{{ opt.zh }}</span>
-          <span v-else class="main dlg-jp" lang="ja"
-            ><template v-for="(p, j) in pieces(opt.furi)" :key="j"
-              ><ruby v-if="p.rt">{{ p.text }}<rt>{{ p.rt }}</rt></ruby
-              ><template v-else>{{ p.plain }}</template></template
-            ></span
-          >
+          <span v-if="q.type === 'read'" class="main">{{ opt.zh }}</span>
+          <template v-else>
+            <span class="main dlg-jp" lang="ja"
+              ><template v-for="(p, j) in pieces(opt.furi)" :key="j"
+                ><ruby v-if="p.rt">{{ p.text }}<rt>{{ p.rt }}</rt></ruby
+                ><template v-else>{{ p.plain }}</template></template
+              ></span
+            >
+            <small v-if="showZh(k)" class="zh">{{ opt.zh }}</small>
+          </template>
         </button>
       </div>
+      <button v-if="solved(state.qi)" class="btn dlg-next" @click.stop="nextQuestion">{{ isLast ? '看全文翻譯 →' : '下一題 →' }}</button>
     </div>
     <div v-else class="dlg-done">
       <p>這段答完了。點句子可以查單字，🔊 可以聽每一句。</p>
