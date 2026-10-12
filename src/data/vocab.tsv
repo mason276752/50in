@@ -690,7 +690,7 @@
 1	n	n	来年	らいねん	明年	next year	来=らい|年=ねん
 1	h	n	ラジオ		收音機	radio	
 1	h	n	ラジオカセ		收錄音機	radio cassette player	
-1	d	n	りっぱ		出色	splendid fine	
+1	d	n	立派	りっぱ	出色	splendid fine	立=りっ|派=ぱ
 1	e	n	留学生	りゅうがくせい	留學生	international student	留=りゅう|学=がく|生=せい
 1	p	n	両親	りょうしん	雙親	parents	両=りょう|親=しん
 1	f	n	料理	りょうり	料理；做菜	cooking cuisine	料=りょう|理=り
@@ -962,7 +962,7 @@
 2	k	v	だす		開始～（接尾）	start doing	
 2	f	n	サラダ		沙拉	salad	
 2	a	v	届ける	とどける	送到	deliver	届=とど|ける
-2	g	v	あいさつする		打招呼	greet	
+2	g	v	挨拶する	あいさつする	打招呼	greet	挨=あい|拶=さつ|する
 2	r	n	景色	けしき	風景	scenery landscape	景色=けしき
 2	k	k	確か	たしか	的確；記得是	remember correctly certain definite	確=たし|か
 2	f	n	ステーキ		牛排	steak	
@@ -1017,12 +1017,12 @@
 2	g	g	申す	もうす	說；叫做（謙讓）	extra modest	申=もう|す
 2	e	n	試験	しけん	考試	exam	試=し|験=けん
 2	m	n	真面目	まじめ	認真	diligent serious	真面目=まじめ
-2	g	g	ごらんになる		看（尊敬）		
+2	g	g	ご覧になる	ごらんになる	看（尊敬）		ご|覧=らん|になる
 2	s	n	店員	てんいん	店員	clerk shop employee	店=てん|員=いん
 2	r	v	泊まる	とまる	住宿	stay	泊=と|まる
 2	g	g	よろしい		好；可以（尊敬）	good all right	
 2	n	n	今夜	こんや	今晚（正式）	evening tonight	今=こん|夜=や
-2	s	n	おつり		找零	change balance money returned	
+2	s	n	お釣り	おつり	找零	change balance money returned	お|釣=つ|り
 2	a	v	チェックする		檢查	check	
 2	e	n	会話	かいわ	會話	conversation	会=かい|話=わ
 2	w	n	空気	くうき	空氣；氣氛	air atmosphere	空=くう|気=き
@@ -1258,8 +1258,8 @@
 2	w	v	冷える	ひえる	變冷	grow cold cool down	冷=ひ|える
 2	a	v	点く	つく	（燈）亮	started switched	点=つ|く
 2	n	n	この間	このあいだ	前幾天	other day recently	この|間=あいだ
-2	o	n	かっこう		外表；樣子	appearance manner shape posture	
-2	m	v	かまう		在意；理會	mind care about concerned	
+2	o	n	格好	かっこう	外表；樣子	appearance manner shape posture	格=かっ|好=こう
+2	m	v	構う	かまう	在意；理會	mind care about concerned	構=かま|う
 2	a	v	落す	おとす	使掉落；弄丟	drop lose	落=おと|す
 2	n	n	明日	あす	明天（正式）	tomorrow	明日=あす
 2	t	n	出発	しゅっぱつ	出發	departure	出=しゅっ|発=ぱつ
@@ -1596,7 +1596,7 @@
 3	o	n	姿	すがた	身影；姿態	figure shape appearance	姿=すがた
 3	r	n	スキー		滑雪	ski	
 3	a	v	救う	すくう	拯救	rescue help	救=すく|う
-3	k	k	すくなくとも		至少	least	
+3	k	k	少なくとも	すくなくとも	至少	least	少=すく|なくとも
 3	d	v	優れる	すぐれる	優秀；勝過	surpass outstrip excel	優=すぐ|れる
 3	r	n	スケート		溜冰	skate skating	
 3	j	n	スケジュール		行程表	schedule	
@@ -1610,8 +1610,8 @@
 3	h	n	スタンド		檯燈；看台	stand	
 3	b	n	頭痛	ずつう	頭痛	headache	頭=ず|痛=つう
 3	k	k	ずっと		一直	long time all time	
-3	f	i	すっぱい		酸	sour acid	
-3	d	n	すてき		很棒；漂亮	lovely great	
+3	f	i	酸っぱい	すっぱい	酸	sour acid	酸=す|っぱい
+3	d	n	素敵	すてき	很棒；漂亮	lovely great	素=す|敵=てき
 3	k	k	既に	すでに	已經（書面）	already	既=すで|に
 3	k	k	すなわち		也就是說	namely	
 3	e	n	スピーチ		演講	speech	
@@ -1772,7 +1772,7 @@
 3	k	k	一体	いったい	到底；一體	object body what earth	一=いっ|体=たい
 3	o	n	一致	いっち	一致	agreement conformity	一=いっ|致=ち
 3	k	k	いつでも		隨時	any time always	
-3	k	k	いつのまにか		不知不覺間	before knows	
+3	k	k	いつの間にか	いつのまにか	不知不覺間	before knows	いつの|間=ま|にか
 3	d	n	一般	いっぱん	一般	general average	一=いっ|般=ぱん
 3	k	k	一方	いっぽう	另一方面	other hand meanwhile	一=いっ|方=ぽう
 3	k	k	いつまでも		永遠地	forever good eternally	
@@ -3722,7 +3722,7 @@
 4	s	n	損得	そんとく	得失	loss gain advantage disadvantage	損=そん|得=とく
 4	w	n	田んぼ	たんぼ	水田	paddy field farm	田=た|んぼ
 4	n	n	第	だい	第～		第=だい
-4	k	k	だいいち		第一；首先	first foremost nbsp nbsp	
+4	k	k	第一	だいいち	第一；首先	first foremost nbsp nbsp	第=だい|一=いち
 4	e	n	大学院	だいがくいん	研究所	graduate school	大=だい|学=がく|院=いん
 4	j	n	大工	だいく	木工	carpenter	大=だい|工=く
 4	o	n	体系	たいけい	體系	system organization	体=たい|系=けい
@@ -3767,14 +3767,14 @@
 4	n	n	短	たん	短～	short	短=たん
 4	p	n	団	だん	～團	group corps party	団=だん
 4	r	n	オーケストラ		管弦樂團	orchestra	
-4	d	n	おおざっぱ		粗略	rough broad sketchy	
+4	d	n	大雑把	おおざっぱ	粗略	rough broad sketchy	大=おお|雑=ざっ|把=ぱ
 4	t	n	大通り	おおどおり	大馬路	main street	大=おお|通=どお|り
 4	x	n	オートメーション		自動化	automation	
 4	g	g	お帰り	おかえり	歡迎回來	return welcome	お|帰=かえ|り
 4	g	g	おかけください		請坐	please sit down	
 4	g	g	おかげさまで		託您的福	thanks god thanks you	
 4	f	n	おかず		配菜	side dish accompaniment rice	
-4	g	g	おかまいなく		請別費心	please don fuss	
+4	g	g	お構いなく	おかまいなく	請別費心	please don fuss	お|構=かま|いなく
 4	c	v	拝む	おがむ	參拜；膜拜	worship pray	拝=おが|む
 4	f	n	お代わり	おかわり	再來一碗	second helping another cup	お|代=か|わり
 4	a	v	補う	おぎなう	彌補	compensate	補=おぎな|う
@@ -4208,7 +4208,7 @@
 4	g	g	さようなら		再見	good bye	
 4	j	n	サラリーマン		上班族	salaryman company employee	
 4	d	i	騒がしい	さわがしい	吵雜	noisy	騒=さわ|がしい
-4	d	n	さわやか		清爽	fresh refreshing	
+4	d	n	爽やか	さわやか	清爽	fresh refreshing	爽=さわ|やか
 4	w	n	山	さん	～山	name mountain	山=さん
 4	x	n	産	さん	～產		産=さん
 4	n	n	三角	さんかく	三角形	triangle triangular	三=さん|角=かく
@@ -4259,7 +4259,7 @@
 4	o	n	実物	じつぶつ	實物	actual thing	実=じつ|物=ぶつ
 4	w	n	しっぽ		尾巴（口語）	tail	
 4	o	n	実用	じつよう	實用	practical utility	実=じつ|用=よう
-4	g	g	しつれいしました		失禮了	excuse sorry	
+4	g	g	失礼しました	しつれいしました	失禮了	excuse sorry	失=しつ|礼=れい|しました
 4	e	n	実例	じつれい	實例	example instance	実=じつ|例=れい
 4	p	n	失恋	しつれん	失戀	broken heart unrequited love	失=しつ|恋=れん
 4	o	n	指定	してい	指定	designation specification assignment	指=し|定=てい
@@ -4352,7 +4352,7 @@
 4	s	n	割引	わりびき	折扣	discount	割=わり|引=びき
 4	s	n	ワンピース		連身裙	piece dress	
 4	o	n	アイデア		點子	idea	
-4	d	n	あいまい		曖昧	vague ambiguous	
+4	d	n	曖昧	あいまい	曖昧	vague ambiguous	曖=あい|昧=まい
 4	a	v	扇ぐ	あおぐ	搧（風）	fan flap	扇=あお|ぐ
 4	d	i	青白い	あおじろい	蒼白	pale	青=あお|白=じろ|い
 4	m	v	呆れる	あきれる	目瞪口呆；傻眼	shocked appalled	呆=あき|れる
@@ -4889,7 +4889,7 @@
 4	o	n	見掛け	みかけ	外表	outward appearance	見=み|掛=か|け
 4	w	n	三日月	みかづき	新月	crescent moon	三=み|日=か|月=づき
 4	w	n	岬	みさき	海岬	cape	岬=みさき
-4	m	n	みじめ		悲慘	sad pitiful wretched	
+4	m	n	惨め	みじめ	悲慘	sad pitiful wretched	惨=みじ|め
 4	h	n	ミシン		縫紉機	sewing machine	
 4	k	k	自ら	みずから	親自	self personally	自=みずか|ら
 4	s	n	水着	みずぎ	泳衣	bathing suit	水=みず|着=ぎ
@@ -4982,7 +4982,7 @@
 4	b	n	薬局	やっきょく	藥局	pharmacy drugstore	薬=やっ|局=きょく
 4	a	v	やっつける		擊敗；收拾	attack beat finish	
 4	a	v	破く	やぶく	撕破（口語）	tear	破=やぶ|く
-4	k	k	やむをえない		不得已	cannot helped unavoidable	
+4	k	k	やむを得ない	やむをえない	不得已	cannot helped unavoidable	やむを|得=え|ない
 4	d	i	軟らかい	やわらかい	軟；柔軟（物）	soft tender limp	軟=やわ|らかい
 4	r	n	遊園地	ゆうえんち	遊樂園	amusement park	遊=ゆう|園=えん|地=ち
 4	c	n	夕刊	ゆうかん	晚報	evening paper	夕=ゆう|刊=かん
@@ -5291,7 +5291,7 @@
 5	o	n	固有	こゆう	固有	characteristic tradition peculiar	固=こ|有=ゆう
 5	n	n	暦	こよみ	曆書	calendar almanac	暦=こよみ
 5	a	v	凝らす	こらす	凝視；費盡（心思）	concentrate devote peer	凝=こ|らす
-5	g	g	ごらんなさい		請看（命令）	look try	
+5	g	g	ご覧なさい	ごらんなさい	請看（命令）	look try	ご|覧=らん|なさい
 5	o	n	孤立	こりつ	孤立	isolation helplessness	孤=こ|立=りつ
 5	m	v	懲りる	こりる	吸取教訓	learn experience disgusted	懲=こ|りる
 5	a	v	凝る	こる	熱衷；（肩膀）僵硬	stiffen harden	凝=こ|る
@@ -5334,7 +5334,7 @@
 5	s	n	差額	さがく	差額	balance difference margin	差=さ|額=がく
 5	f	n	杯	さかずき	酒杯	wine cup	杯=さかずき
 5	r	n	逆立ち	さかだち	倒立	handstand headstand	逆=さか|立=だ|ち
-5	n	n	さきに		先前；之前	before earlier than previously	
+5	n	n	先に	さきに	先前；之前	before earlier than previously	先=さき|に
 5	c	n	詐欺	さぎ	詐欺	fraud swindle	詐=さ|欺=ぎ
 5	o	n	削減	さくげん	削減	cut reduction	削=さく|減=げん
 5	o	n	錯誤	さくご	錯誤（謬誤）	mistake	錯=さく|誤=ご
@@ -5473,7 +5473,7 @@
 5	k	k	とかく		總是；動不動	anyhow anyway any case	
 5	p	v	とがめる		責怪	blame rebuke	
 5	k	k	時折	ときおり	有時（時折）	sometimes	時=とき|折=おり
-5	a	v	とぎれる		中斷	pause interrupted	
+5	a	v	途切れる	とぎれる	中斷	pause interrupted	途=と|切=ぎ|れる
 5	a	v	研ぐ	とぐ	研磨；淘（米）	sharpen grind polish	研=と|ぐ
 5	o	n	特技	とくぎ	特長；專長	special talent skill	特=とく|技=ぎ
 5	c	n	独裁	どくさい	獨裁	dictatorship despotism	独=どく|裁=さい
@@ -5577,7 +5577,7 @@
 5	a	v	名付ける	なづける	命名	name	名=な|付=づ|ける
 5	d	i	何気ない	なにげない	若無其事	casual unconcerned	何=なに|気=げ|ない
 5	g	g	なにとぞ		請務必（書面）	please kindly all means	
-5	k	k	なにより		最好；比什麼都	most best	
+5	k	k	何より	なにより	最好；比什麼都	most best	何=なに|より
 5	f	n	ナプキン		餐巾	napkin	
 5	h	n	名札	なふだ	名牌	name plate name tag	名=な|札=ふだ
 5	f	i	生臭い	なまぐさい	腥臭	smelling fish blood fish	生=なま|臭=ぐさ|い
@@ -5820,7 +5820,7 @@
 5	w	n	大空	おおぞら	天空（廣闊）	heaven sky	大=おお|空=ぞら
 5	x	n	オートマチック		自動的	automatic	
 5	d	n	大幅	おおはば	大幅	full width large scale	大=おお|幅=はば
-5	d	n	おおまかな		粗略的	rough approximate	
+5	d	n	大まかな	おおまかな	粗略的	rough approximate	大=おお|まかな
 5	w	n	大水	おおみず	洪水（口語）	flood	大=おお|水=みず
 5	c	n	公	おおやけ	公家；公開	public	公=おおやけ
 5	c	v	犯す	おかす	犯（罪）	perpetrate violate	犯=おか|す
@@ -6013,7 +6013,7 @@
 5	f	n	粥	かゆ	稀飯	rice porridge	粥=かゆ
 5	b	n	体付き	からだつき	體格	body build figure	体=からだ|付=つ|き
 5	a	v	絡む	からむ	纏繞；糾纏	entangle entwine	絡=から|む
-5	k	k	かりに		暫時；假如	temporarily argument sake	
+5	k	k	仮に	かりに	暫時；假如	temporarily argument sake	仮=かり|に
 5	b	n	カルテ		病歷	clinical records	
 5	h	n	ガレージ		車庫（住家）	garage	
 5	b	n	過労	かろう	過勞	overwork strain	過=か|労=ろう
@@ -6114,7 +6114,7 @@
 5	m	n	気まぐれ	きまぐれ	反覆無常	whim caprice uneven temper	気=き|まぐれ
 5	m	n	生真面目	きまじめ	一本正經	serious sincerity	生真面目=きまじめ
 5	n	n	期末	きまつ	期末		期=き|末=まつ
-5	m	i	きまりわるい		難為情	feeling awkward ashamed	
+5	m	i	決まり悪い	きまりわるい	難為情	feeling awkward ashamed	決=き|まり|悪=わる|い
 5	j	n	記名	きめい	記名	signature register	記=き|名=めい
 5	c	n	規約	きやく	規約	agreement rules code	規=き|約=やく
 5	r	n	脚色	きゃくしょく	改編（劇本）	dramatization film	脚=きゃく|色=しょく
@@ -6553,12 +6553,12 @@
 5	t	n	スポーツカー		跑車	sports car	
 5	a	v	澄ます	すます	澄清；裝作若無其事	clear clear listen	澄=す|ます
 5	a	v	済ます	すます	辦完；將就	finish settle without	済=す|ます
-5	d	n	すみやか		迅速（すみやか）	speedy	
+5	d	n	速やか	すみやか	迅速（すみやか）	speedy	速=すみ|やか
 5	s	n	スラックス		休閒褲	slacks	
 5	k	k	ずらっと		一整排	line row	
 5	k	k	ずるずる		拖拖拉拉	dragging sound sniffling	
 5	o	n	ずれ		落差；偏差	difference gap	
-5	o	n	すれちがい		錯身而過	chance encounter	
+5	o	n	すれ違い	すれちがい	錯身而過	chance encounter	すれ|違=ちが|い
 5	a	v	擦れる	すれる	摩擦（自動）	rub chafe	擦=す|れる
 5	k	k	すんなり		順利；苗條	pass objection slim slender	
 5	w	n	生育	せいいく	生長發育	growth development breeding	生=せい|育=いく
@@ -7370,7 +7370,7 @@
 5	d	n	まちまち		形形色色	various different	
 5	n	n	末期	まっき	末期	deathbed hour death	末=まっ|期=き
 5	k	k	真っ二つ	まっぷたつ	一分為二	two equal parts	真=ま|っ|二=ぷた|つ
-5	o	n	まと		靶子；目標	mark target	
+5	o	n	的	まと	靶子；目標	mark target	的=まと
 5	o	n	纏まり	まとまり	統一性；一致	conclusion settlement consistency	纏=まと|まり
 5	o	n	纏め	まとめ	總結	settlement conclusion	纏=まと|め
 5	a	v	免れる	まぬがれる	免除；避免	escape exempted	免=まぬが|れる
@@ -7537,8 +7537,8 @@
 5	o	n	闇	やみ	黑暗；黑市	darkness shady illegal	闇=やみ
 5	b	v	病む	やむ	患病	fall ill ill	病=や|む
 5	d	i	ややこしい		麻煩；複雜	puzzling tangled complicated complex	
-5	a	v	やりとおす		貫徹到底	carry through achieve complete	
-5	a	v	やりとげる		完成（做完）	accomplish	
+5	a	v	やり通す	やりとおす	貫徹到底	carry through achieve complete	やり|通=とお|す
+5	a	v	やり遂げる	やりとげる	完成（做完）	accomplish	やり|遂=と|げる
 5	a	v	和らげる	やわらげる	緩和；減輕	soften moderate relieve	和=やわ|らげる
 5	x	n	油	ゆ	～油	oil	油=ゆ
 5	o	n	優位	ゆうい	優勢；有利地位	predominance ascendancy superiority	優=ゆう|位=い

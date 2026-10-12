@@ -4,89 +4,17 @@
 // 用法：node scripts/build-grammar.mjs
 import fs from 'node:fs'
 import path from 'node:path'
-import { ROOT, hira, splitRun, groupRead } from './lib/furigana.mjs'
+import { ROOT } from './lib/furigana.mjs'
+import { parseRuby, textOf, loadGloss } from './lib/ruby.mjs'
 
 const dir = path.join(ROOT, 'scripts/grammar')
 const errors = []
 const warnings = []
 const CATS = ['p', 'v', 'a', 'j', 'e', 'g', 'q']
 
-
-const RUN = /[0-9０-９一-鿿々〆〇]/
-const KANJI = /[一-鿿々〆〇]/
-// 来る的讀音看後面接什麼：来ます・来た・来て＝き、来ない・来よう・来られる・来させる・来い＝こ、来る・来れば＝く
-const KURU = { ま: 'き', た: 'き', て: 'き', な: 'こ', よ: 'こ', ら: 'こ', さ: 'こ', い: 'こ', る: 'く', れ: 'く' }
-
-// 一個漢字詞 + 讀音 → 振假名段：逐字對得上就逐字標，熟字訓（今日＝きょう）整段標，對不上就是讀音寫錯了
-function rubySegs(run, rt, where) {
-  if (/[0-9０-９]/.test(run)) return [[run, rt]] // 數字（7時＝しちじ）整段標
-  const r = splitRun(run, hira(rt))
-  if (r && !r.segs.some((s) => s[2])) return r.segs.map((s) => s.slice(0, 2))
-  if (groupRead.get(run)?.has(hira(rt))) return [[run, rt]]
-  if (MANUAL.has(`${run}=${rt}`)) return [[run, rt]]
-  throw new Error(`${where}：「${run}(${rt})」讀音對不上單字庫，確定沒寫錯的話加進 build-grammar.mjs 的 MANUAL`)
-}
-// 單字庫沒有、但確定正確的讀法
-const MANUAL = new Set(`一人=ひとり 納豆=なっとう 我=わ 偽物=にせもの 寿司=すし 豆腐=とうふ 堪=た 否=いな 忍=しの 難=かた 形見=かたみ 完璧=かんぺき`.split(/\s+/))
-
-// 「毎朝(まいあさ)7時(しちじ)に」→ [['毎','まい'],['朝','あさ'],['7時','しちじ'],['に']]
-// ctx：同一句其他地方標過的讀音（選項裡同一個詞可以不再標）
-function parseRuby(str, where, ctx) {
-  const segs = []
-  let i = 0
-  const chars = [...str]
-  while (i < chars.length) {
-    if (!RUN.test(chars[i])) {
-      segs.push([chars[i++]])
-      continue
-    }
-    let j = i
-    while (j < chars.length && RUN.test(chars[j])) j++
-    const run = chars.slice(i, j).join('')
-    if (chars[j] === '(') {
-      const end = chars.indexOf(')', j)
-      if (end < 0) throw new Error(`${where}：「${run}(」少了右括號`)
-      const rt = chars.slice(j + 1, end).join('')
-      if (!/^[ぁ-ゖー]+$/.test(rt)) throw new Error(`${where}：「${run}(${rt})」讀音要用平假名`)
-      ctx.set(run, ctx.has(run) && ctx.get(run) !== rt ? null : rt)
-      segs.push(...rubySegs(run, rt, where))
-      i = end + 1
-      continue
-    }
-    const rt = run === '来' && KURU[chars[j]] ? KURU[chars[j]] : ctx.get(run)
-    if (!rt) throw new Error(`${where}：「${run}」沒有標讀音（句子裡也沒有同一個詞可以沿用）`)
-    segs.push(...rubySegs(run, rt, where))
-    i = j
-  }
-  // 相鄰假名段合併
-  const out = []
-  for (const s of segs) {
-    if (!s[1] && out.length && !out.at(-1)[1]) out.at(-1)[0] += s[0]
-    else out.push([...s])
-  }
-  if (out.some((s) => !s[1] && KANJI.test(s[0]))) throw new Error(`${where}：有漢字沒標讀音「${str}」`)
-  return out
-}
-const textOf = (segs) => segs.map((s) => s[0]).join('')
-
 // 選項的中文說明：句子裡沒寫的查 gloss.txt（は、が、を 這類寫一次就好）
 // gloss.txt 的日文也可以標讀音（に反(はん)して）：選項沒標讀音時沿用，複合助詞不用每次都標
-const GLOSS = new Map()
-const GLOSS_SEGS = new Map()
-fs.readFileSync(path.join(dir, 'gloss.txt'), 'utf8')
-  .split('\n')
-  .forEach((line, n) => {
-    const t = line.trim()
-    if (!t || t.startsWith('#')) return
-    const i = t.indexOf('/')
-    try {
-      const segs = parseRuby(t.slice(0, i), `gloss.txt:${n + 1}`, new Map())
-      GLOSS.set(textOf(segs), t.slice(i + 1))
-      GLOSS_SEGS.set(textOf(segs), segs)
-    } catch (e) {
-      errors.push(e.message)
-    }
-  })
+const { gloss: GLOSS, segsOf: GLOSS_SEGS } = loadGloss([path.join(dir, 'gloss.txt')], errors)
 const missing = new Map()
 
 function glossOf(ja, inline, bad, where) {

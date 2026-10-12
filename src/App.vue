@@ -9,8 +9,10 @@ import DialogQuiz from './DialogQuiz.vue'
 import { DIALOG_LEVELS, loadDialogs, dialogById, dialogCats, buildDialogPool } from './dialogs'
 import { GRAMMAR_CATS, GRAMMAR_LEVELS, loadGrammar, grammarById, buildGrammarPool, makeGrammarQ } from './grammar'
 import { jpChunks, fitSize } from './jpBreak'
+import { makePhraseCard } from './phraseQ'
+import { migrateStats, migrateConfusions } from './renamed'
 import { playSfx, preloadSfx } from './sfx'
-import { WORD_CATS, LEVELS, DIRECTIONS, PHRASE_CATS, PHRASE_LEVELS, DECKS, MIX, buildWordPool, loadDeck, wordById, wordsByCat, makeChoices, plainZh, baseKey } from './words'
+import { WORD_CATS, LEVELS, PHRASE_CATS, PHRASE_LEVELS, DECKS, MIX, buildWordPool, loadDeck, wordById, wordsByCat, makeChoices, plainZh, baseKey } from './words'
 
 const LS_SETTINGS = 'kana-quiz:settings'
 const LS_STATS = 'kana-quiz:stats'
@@ -145,6 +147,8 @@ const isLong = (x) => Array.from(x.display).length > 5
 const kanaStats = reactive(load(LS_STATS, {}))
 // 舊版單字題庫（id 只有 'ja2zh:水'）的紀錄對不上新題庫，清掉
 for (const k of Object.keys(kanaStats)) if (/^(ja2zh|zh2ja):[^:]*$/.test(k)) delete kanaStats[k]
+// 題庫改過寫法（すてき→素敵）的單字、短句：紀錄搬到新 id
+if (migrateStats(kanaStats)) save(LS_STATS, kanaStats)
 watch(kanaStats, (v) => save(LS_STATS, v), { deep: true })
 // 認字和寫字是不同能力：手寫的紀錄另外存在 'w|' 開頭的 key
 const WRITE_PREFIX = 'w|'
@@ -292,12 +296,14 @@ function showCard(next) {
   recent.push(next.id)
   while (recent.length > Math.min(4, p.length - 1)) recent.shift()
 
-  current.value = next
+  // 短句：帶入變數（數量、時間、地點…每次換）、挖空題、回應題；current 是帶入後的那一句，id 跟原句一樣
+  const ph = next.deck === 'phrase' ? makePhraseCard(next, confusedWith(next)) : null
+  current.value = ph ? ph.cur : next
   // 語法：這次出哪一句、哪幾個選項
-  const q = next.deck === 'grammar' ? makeGrammarQ(next) : null
+  const q = next.deck === 'grammar' ? makeGrammarQ(next) : ph?.q
   Object.assign(card, {
     q,
-    options: q ? q.options : vocab.value && !dialog.value ? makeChoices(next, confusedWith(next)) : [],
+    options: ph ? ph.options : q ? q.options : vocab.value && !dialog.value ? makeChoices(next, confusedWith(next)) : [],
     wrongIds: [],
     isNew: !kanaStats[sk(next.id)], missed: false, hint: false, review: false, startedAt: performance.now(), flash: '', shake: false,
     // 同樣是黑體，き、さ、り 有連筆／分開、け、は 有勾／直的，每題隨機換一種，各種寫法都要認得
@@ -321,17 +327,21 @@ const cardTag = computed(() => {
   const x = current.value
   if (!x) return ''
   if (x.deck === 'grammar') return `${GRAMMAR_LEVELS[x.level - 1].label} · ${GRAMMAR_CATS.find((c) => c.key === x.cat).label}`
-  if (vocab.value) return `${DECKS[x.deck].levels[x.level - 1].label} · ${DIRECTIONS.find((d) => d.key === x.dir).label}`
+  if (vocab.value) return `${DECKS[x.deck].levels[x.level - 1].label} · ${DECKS[x.deck].dirs.find((d) => d.key === x.dir).label}`
   return x.script === 'kata' ? '片' : '平'
 })
 
 const KANA_FONTS = 4 // style.css 的 .kana-font-0 … 3
 const kanaFont = computed(() => `kana-font-${card.font}`)
 
-// 中→日、漢→假的發音就是答案、語法唸整句會聽到挖空的答案：自動播放改成答完才唸
+// 中→日、漢→假的發音就是答案、語法和挖空題唸整句會聽到答案：自動播放改成答完才唸
+// （回應題一開始唸的是對方說的話，答完再唸答案）
 function answerIsSpoken() {
-  return current.value?.dir === 'zh2ja' || current.value?.dir === 'kanji2kana' || current.value?.deck === 'grammar'
+  const x = current.value
+  return x?.dir === 'zh2ja' || x?.dir === 'kanji2kana' || x?.dir === 'cloze' || x?.deck === 'grammar'
 }
+// 答完要不要再唸一次（唸的是答案）
+const speakAfterAnswer = () => answerIsSpoken() || card.q?.kind === 'reply'
 
 // 播音效；麥克風開著時先暫停比對，免得收到音效聲
 function feedback(kind) {
@@ -385,7 +395,7 @@ function markCorrect({ advance = true } = {}) {
   // 短句、語法：答對後停下來，每個選項都顯示意思，看完按「下一題」才換（答案是發音的照樣唸一次）
   if (deck.value === 'phrase' || deck.value === 'grammar') {
     card.review = true
-    if (settings.autoSpeak && answerIsSpoken() && !card.hint) setTimeout(() => playSound(), settings.sfx ? 450 : 0)
+    if (settings.autoSpeak && speakAfterAnswer() && !card.hint) setTimeout(() => playSound(), settings.sfx ? 450 : 0)
     return
   }
   // 看答案時已經唸過，就不用再等一次
@@ -425,7 +435,7 @@ function skip() {
   if (!card.hint) {
     markWrong({ silent: true }) // 第一次按：顯示答案
     // 中→日、漢→假的答案就是發音：揭曉時一起唸
-    if (settings.autoSpeak && answerIsSpoken()) playSound()
+    if (settings.autoSpeak && speakAfterAnswer()) playSound()
     return
   }
   locked = true
@@ -462,13 +472,14 @@ function choose(opt) {
   if (opt.id === current.value.id) return markCorrect()
   if (card.wrongIds.includes(opt.id)) return // 已經選錯過的不重複扣
   card.wrongIds.push(opt.id)
-  // 造出來的錯誤讀音不是真的字、語法的選項是跟著例句的，不用記
-  if (!opt.fake && current.value.deck !== 'grammar') recordConfusion(current.value, opt)
+  // 造出來的錯誤讀音不是真的字、語法和短句挖空／回應題的選項是跟著題目的、同一句換了值的也不用記
+  if (!opt.fake && !opt.variant && !card.q) recordConfusion(current.value, opt)
   markWrong({ reveal: false })
 }
 
 // 選錯的組合記下來（兩個方向都算），之後考其中一個時優先把另一個放進選項
 const confusions = load(LS_CONFUSE, {}) // baseKey → { baseKey: 選錯次數 }
+if (migrateConfusions(confusions)) save(LS_CONFUSE, confusions)
 function recordConfusion(a, b) {
   for (const [x, y] of [
     [baseKey(a), baseKey(b)],
@@ -499,6 +510,12 @@ function jpSub(w, revealed) {
 function jpSize(w, mode) {
   const text = mode === 'kana' ? w.kana : w.ja
   return { fontSize: `${fitSize(w.deck === 'phrase' ? jpChunks(w, mode) : [text])}cqw` }
+}
+
+// 選項格子窄：最長的一節（不能斷的一段）太長就照格子寬度縮小字，不要斷成「おやすみなさ／い」
+function optSize(w) {
+  const longest = Math.max(...jpChunks(w, settings.vocabShow === 'kana' ? 'kana' : 'kanji').map((c) => Array.from(c).length))
+  return longest > 5 ? { fontSize: `max(13px, min(20px, ${(94 / longest).toFixed(1)}cqw))` } : null
 }
 
 // 字越多字越小，長單字也塞得進卡片
@@ -659,13 +676,14 @@ function playSound(onEnd) {
   }
   clearTimeout(autoSpeakTimer) // 自己按了發音，就不用再自動唸一次
   if (!current.value) return onEnd?.()
-  // 語法：唸的是填好答案的整句，答完才能聽
-  const isGrammar = current.value.deck === 'grammar'
-  if (isGrammar && !revealed()) return onEnd?.()
+  // 語法、挖空：唸的是填好答案的整句，答完才能聽；回應：答完前唸對方說的話，答完唸答案
+  const q = card.q
+  if (q && q.kind !== 'reply' && !revealed()) return onEnd?.()
   // 播放時暫停比對，避免麥克風收到喇叭聲音自動答對
   ignoreSpeechUntil = Infinity
   const id = current.value.id
-  speak(isGrammar ? card.q.kana : current.value.say ?? current.value.hira, (reason) => {
+  const text = !q ? current.value.say ?? current.value.hira : q.kind === 'reply' && revealed() ? q.answer.kana : q.kana
+  speak(text, (reason) => {
     ignoreSpeechUntil = performance.now() + 500
     if (reason === 'not-allowed') blockedSpeech = id
     onEnd?.(reason)
@@ -1026,8 +1044,14 @@ onBeforeUnmount(() => {
             複習 <i v-for="n in REVIEW_STREAK" :key="n" :class="{ done: n <= currentReview }" />
           </span>
           <span v-else-if="card.isNew" class="review-tag">{{ vocab ? { phrase: '新短句', grammar: '新語法' }[current.deck] || '新單字' : '新字' }}</span>
-          <!-- 語法：挖空的句子，答完把答案填進空格；中文一開始就給（分辨時態、可以／不可以這類要靠意思） -->
-          <template v-if="card.q">
+          <!-- 短句回應題：對方說的一句話，選出最自然的回應；答完才給中文 -->
+          <template v-if="card.q?.kind === 'reply'">
+            <div class="reply-who">{{ card.q.who }}</div>
+            <div class="gram-sentence reply-said" :class="{ ruby: settings.vocabShow === 'both' }">「<JpWord :word="card.q.prompt" :mode="settings.vocabShow" />」</div>
+            <div class="gram-zh">{{ revealed() ? card.q.promptZh : '怎麼回答比較自然？' }}</div>
+          </template>
+          <!-- 語法、短句挖空題：挖空的句子，答完把答案填進空格；中文一開始就給（分辨時態、可以／不可以這類要靠意思） -->
+          <template v-else-if="card.q">
             <div class="gram-sentence" :class="{ ruby: settings.vocabShow === 'both' }">
               <JpWord v-if="card.q.before.ja" :word="card.q.before" :mode="settings.vocabShow" /><span
                 class="gram-blank"
@@ -1071,7 +1095,7 @@ onBeforeUnmount(() => {
             <button v-for="(opt, i) in card.options" :key="opt.id" class="opt" :class="optionClass(opt)" @click.stop="choose(opt)">
               <span class="num">{{ i + 1 }}</span>
               <template v-if="card.q">
-                <JpWord class="main" :word="opt" :mode="settings.vocabShow" />
+                <JpWord class="main" :word="opt" :mode="settings.vocabShow" :style="optSize(opt)" />
                 <small v-if="optShown(opt)" class="zh" :class="{ fake: opt.fake }">{{ opt.zh }}</small>
               </template>
               <template v-else-if="current.dir === 'ja2zh'">
@@ -1084,24 +1108,24 @@ onBeforeUnmount(() => {
                 <small v-else-if="optShown(opt)" class="zh">{{ opt.ja }}・{{ plainZh(opt.zh) }}</small>
               </template>
               <template v-else>
-                <JpWord class="main" :word="opt" :mode="settings.vocabShow" />
+                <JpWord class="main" :word="opt" :mode="settings.vocabShow" :style="optSize(opt)" />
                 <small v-if="optShown(opt)" class="zh">{{ jpSub(opt, true) ? `${jpSub(opt, true)}・` : '' }}{{ opt.zh }}</small>
               </template>
             </button>
           </div>
-          <div v-if="card.q && revealed()" class="gram-note">
+          <div v-if="card.q && revealed() && current.deck === 'grammar'" class="gram-note">
             <div><b lang="ja">{{ current.form }}</b>{{ current.mean }}</div>
             <p>{{ current.note }}</p>
           </div>
           <div class="actions vocab">
-            <button class="btn" title="Esc" :disabled="card.q && !revealed()" @click.stop="playSound">🔊<span class="label"> 發音</span></button>
+            <button class="btn" title="Esc" :disabled="card.q && card.q.kind !== 'reply' && !revealed()" @click.stop="playSound">🔊<span class="label"> 發音</span></button>
             <button class="btn" title="Enter" @click.stop="skip">{{ card.hint || card.review ? '下一題' : '看答案' }}</button>
           </div>
           <div class="speech-line">
             <template v-if="card.review">看完各選項的意思，按「下一題」繼續{{ isTouch ? '' : '（Enter）' }}</template>
             <template v-else-if="card.hint">點正確答案（綠色）繼續</template>
             <template v-else-if="card.wrongIds.length && card.flash !== 'ok'">不對喔，再選一次</template>
-            <template v-else-if="!isTouch">1–4：選答案　Enter：看答案 / 下一題　Esc：{{ card.q ? '聽整句（答完後）' : '聽發音' }}</template>
+            <template v-else-if="!isTouch">1–4：選答案　Enter：看答案 / 下一題　Esc：{{ card.q?.kind === 'reply' ? '聽對方說的話' : card.q ? '聽整句（答完後）' : '聽發音' }}</template>
           </div>
         </template>
 

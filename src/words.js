@@ -5,6 +5,7 @@
 // 詞性：v 動詞 | i い形容詞 | k 副詞・連接詞・文法 | g 招呼・慣用語 | n 名詞及其他（含な形容詞）
 // 檔案約 180KB(gzip)，切到單字模式才載入
 // 短句題庫 data/phrases.tsv 格式相同（自編，約 2000 句，26 種情境），難度分 入門／基礎／進階，詞性一律 g
+// 短句的變化（變數、挖空題、回應題）在 data/phrase-ext.json，由 scripts/build-phrases.mjs 產生，出題見 phraseQ.js
 
 export const WORD_CATS = [
   { key: 'g', label: '招呼・慣用語' },
@@ -41,6 +42,9 @@ export const DIRECTIONS = [
   { key: 'zh2ja', label: '中→日' },
   { key: 'kanji2kana', label: '漢→假' }, // 看漢字選讀音
 ]
+
+// 短句多兩種題型：挖空（選出句子缺的字）、回應（選出最自然的回話），只有寫了題目的短句才有
+export const PHRASE_DIRS = [...DIRECTIONS.slice(0, 2), { key: 'cloze', label: '挖空' }, { key: 'reply', label: '回應' }]
 
 export const PHRASE_CATS = [
   { key: 'a', label: '招呼・寒暄' },
@@ -80,7 +84,12 @@ export const PHRASE_LEVELS = [
 // 兩副選擇題題庫：單字、短句（短句沒有「漢→假」）
 export const DECKS = {
   vocab: { cats: WORD_CATS, levels: LEVELS, dirs: DIRECTIONS, load: () => import('./data/vocab.tsv?raw') },
-  phrase: { cats: PHRASE_CATS, levels: PHRASE_LEVELS, dirs: DIRECTIONS.slice(0, 2), load: () => import('./data/phrases.tsv?raw') },
+  phrase: {
+    cats: PHRASE_CATS,
+    levels: PHRASE_LEVELS,
+    dirs: PHRASE_DIRS,
+    load: () => Promise.all([import('./data/phrases.tsv?raw'), import('./data/phrase-ext.json')]),
+  },
 }
 
 const ALL = {} // { vocab: { ja2zh: [...], … }, phrase: { ja2zh: [...], zh2ja: [...] } }
@@ -92,7 +101,7 @@ const isKanjiSeg = (seg) => seg && seg[1] != null
 const READINGS_OF_JA = new Map() // 寫法 → 所有正確讀音（明日：あした、あす）
 const loading = {}
 
-function parse(raw, deck) {
+function parse(raw, deck, ext = {}) {
   const rows = raw
     .split('\n')
     .filter(Boolean)
@@ -127,10 +136,13 @@ function parse(raw, deck) {
   }
 
   ALL[deck] = {}
+  // 挖空、回應只出有寫題目的短句
+  const has = { cloze: (r) => ext[r.ja]?.c, reply: (r) => ext[r.ja]?.r }
   for (const { key: dir } of DECKS[deck].dirs) {
-    ALL[deck][dir] = rows.map((r) => {
+    ALL[deck][dir] = rows.filter((r) => !has[dir] || has[dir](r)).map((r) => {
       const item = {
         ...r,
+        ext: ext[r.ja],
         // 單字沿用舊 id，學習紀錄才接得上
         id: idOf(deck, dir, r),
         kind: 'vocab',
@@ -148,7 +160,7 @@ function parse(raw, deck) {
 }
 
 export function loadDeck(deck) {
-  loading[deck] ||= DECKS[deck].load().then((m) => parse(m.default, deck))
+  loading[deck] ||= DECKS[deck].load().then((m) => (Array.isArray(m) ? parse(m[0].default, deck, m[1].default) : parse(m.default, deck)))
   return loading[deck]
 }
 
@@ -177,7 +189,8 @@ export function buildWordPool(deck, dir, cats, levels) {
     }
     const slots = []
     levelPool(deck, dirs[0], cats, level).forEach((w, i) => {
-      const avail = dirs.filter((d) => d !== 'kanji2kana' || w.ja !== w.kana) // 沒漢字的詞不考漢→假
+      // 沒漢字的詞不考漢→假；短句沒寫挖空、回應題的就沒有那兩種
+      const avail = dirs.filter((d) => BY_ID.has(idOf(deck, d, w)) && (d !== 'kanji2kana' || w.ja !== w.kana))
       avail.forEach((_, j) => {
         const d = avail[(i + j) % avail.length]
         slots.push({ key: i + j * MIX_GAP, item: BY_ID.get(idOf(deck, d, w)) })
@@ -225,11 +238,20 @@ export function plainZh(zh) {
   return zh.replace(/（[^）]*）/g, '') || zh
 }
 
-// 不分出題方向的單字 key，用來記「哪兩個字容易搞混」
-export const baseKey = (w) => `${w.ja}:${w.kana}`
+// 不分出題方向的單字 key，用來記「哪兩個字容易搞混」（短句帶入變數後的那一句，用原句的 key）
+export const baseKey = (w) => w.bk ?? `${w.ja}:${w.kana}`
 
-// 短句比意思用：去掉註記、標點、語助詞和人稱（「多少錢？」→「多少錢」）
-const coreZh = (zh) => zh.replace(/（[^）]*）/g, '').replace(/[？！，、。…；～ 喔呢吧了嗎啊囉耶我你您請的]/g, '')
+// 短句比意思用：去掉註記、標點、語助詞和人稱，再去掉開頭的程度副詞（「多少錢？」→「多少錢」、「很開心」「好開心！」→「開心」）
+const coreZh = (zh) =>
+  zh
+    .replace(/（[^）]*）/g, '')
+    .replace(/[？！，、。…；～ 喔呢吧了嗎啊囉耶我你您請的]/g, '')
+    .replace(/^(很|好|真|太|超|非常|有點)(?=.)/, '')
+// 「多少錢？」和「全部多少錢？」、「很開心」和「好開心！」放在一起，兩個都像對的
+function nearZh(p, q) {
+  const [x, y] = [coreZh(p), coreZh(q)].sort((a, b) => a.length - b.length)
+  return x === y || (x.length >= 3 && y.includes(x))
+}
 
 // 意思太接近的不能同時當選項（例如 美しい / 綺麗 都是「漂亮」）
 // 英文關鍵字欄在短句裡是同義組代號（ありがとう／ありがとうございます 同一組）
@@ -238,11 +260,9 @@ function tooClose(a, b) {
   if (a.ja === b.ja || a.kana === b.kana) return true
   const ma = meanings(a.zh)
   if (meanings(b.zh).some((x) => ma.includes(x))) return true
-  if (a.deck === 'phrase') {
-    // 「多少錢？」和「全部多少錢？」放在一起，兩個都像對的
-    const [x, y] = [coreZh(a.zh), coreZh(b.zh)].sort((p, q) => p.length - q.length)
-    if (x === y || (x.length >= 3 && y.includes(x))) return true
-  }
+  // 短句：整句比，每個意思（；分開）也分開比（「好浪費；好可惜」和「真可惜」）
+  if (a.deck === 'phrase' && (nearZh(a.zh, b.zh) || a.zh.split('；').some((p) => b.zh.split('；').some((q) => nearZh(p, q)))))
+    return true
   return a.en.some((w) => b.en.includes(w))
 }
 
